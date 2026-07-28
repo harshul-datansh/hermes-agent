@@ -23,8 +23,9 @@ Native Windows can run this POC's scripts and monitor. WSL2 is still recommended
 | Upstream | `https://github.com/NousResearch/hermes-agent` |
 | Path | repository root |
 | Datansh branch | `codex/datansh-agent-os` |
-| Commit | `1dfe781edd5e96d09511cf27d800a03e63b09789` |
-| Remote fork | Not attached yet; set `DATANSH_HERMES_FORK_URL` in `.env` and run `scripts/attach_fork_remote.ps1` |
+| Commit | `86091aa74` |
+| Remote fork | `https://github.com/harshul-datansh/hermes-agent.git` |
+| Published branch | `codex/datansh-agent-os` |
 
 Verified current docs and repository state:
 
@@ -106,10 +107,6 @@ Latest verified run:
 
 This fork now contains the Datansh POC layer under `datansh-agent-os/`. If no OpenRouter key is configured, the demo runs in offline POC mode and documents that limitation in the generated metadata.
 
-## Fork Remote Next Step
+## Fork Remote
 
-GitHub CLI is not installed on this machine, so I could not create the remote fork automatically. Create the fork in GitHub, set `DATANSH_HERMES_FORK_URL` in `datansh-agent-os/.env`, then run:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File datansh-agent-os/scripts/attach_fork_remote.ps1
-```
+The Datansh fork is attached as `origin`, the NousResearch repository is preserved as `upstream`, and the Datansh implementation is published on `codex/datansh-agent-os`. The local `.env` keeps the fork URL in the same central configuration file as the runtime settings.
