@@ -1,0 +1,15 @@
+.env
+*.env
+**/.env
+*.key
+*.pem
+monitor/events.jsonl
+demo/runs/
+docs/openrouter-free-models-*.json
+__pycache__/
+**/__pycache__/
+.venv/
+node_modules/
+.pytest_cache/
+*.pyc
+
