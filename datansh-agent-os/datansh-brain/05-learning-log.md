@@ -10,3 +10,5 @@
 | 2026-07-29 | 2026-07-29T13-47-09 | A stronger generation model on weak retrieval produces failures that are more fluent, not less wrong | Any RAG feature | demo run |
 | 2026-07-29 | 2026-07-29T14-10-32 | A stronger generation model on weak retrieval produces failures that are more fluent, not less wrong | Any RAG feature | demo run |
 | 2026-07-29 | 2026-07-29T14-18-13 | A stronger generation model on weak retrieval produces failures that are more fluent, not less wrong | Any RAG feature | demo run |
+| 2026-07-29 | 2026-07-29T14-29-27 | A stronger generation model on weak retrieval produces failures that are more fluent, not less wrong | Any RAG feature | demo run |
+| 2026-07-29 | 2026-07-29T14-30-28 | A stronger generation model on weak retrieval produces failures that are more fluent, not less wrong | Any RAG feature | demo run |

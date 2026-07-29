@@ -1,6 +1,6 @@
 # OpenRouter Free Models Summary
 
-Generated: 2026-07-29T12:35:02
+Generated: 2026-07-29T14:24:40
 
 Live API candidates saved to `openrouter-free-models-2026-07-29.json`.
 
@@ -17,6 +17,6 @@ Live API candidates saved to `openrouter-free-models-2026-07-29.json`.
 
 | Model | Passed | Mode | Latency ms | Notes |
 | --- | --- | --- | ---: | --- |
-| `openrouter/free` | True | live | 2825 | Datansh free model smoke test passed. |
-| `cohere/north-mini-code:free` | True | live | 2629 | Datansh free model smoke test passed. |
-| `poolside/laguna-s-2.1:free` | False | live_failed | 410 | {"error":{"message":"Provider returned error","code":429,"metadata":{"raw":"poolside/laguna-s-2.1:free is temporarily rate-limited upstream. Please retry shortly, or add your own k |
+| `openrouter/free` | False | live_failed | 429 | {"error":{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day","code":429,"metadata":{"headers":{"X-RateLimit-Limit":"50" |
+| `cohere/north-mini-code:free` | False | live_failed | 99 | {"error":{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day","code":429,"metadata":{"headers":{"X-RateLimit-Limit":"50" |
+| `poolside/laguna-s-2.1:free` | False | live_failed | 126 | {"error":{"message":"Rate limit exceeded: free-models-per-day. Add 10 credits to unlock 1000 free model requests per day","code":429,"metadata":{"headers":{"X-RateLimit-Limit":"50" |

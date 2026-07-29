@@ -14,6 +14,9 @@
 - Native Windows is fine for scripts and Streamlit, but Hermes TUI/chat pane is more reliable in WSL2.
 - The monitor reads local JSONL events and does not yet stream directly from Hermes REST session events.
 - Roles run in a fixed sequence. The Master Orchestrator writes a route plan, but the runner does not act on it, so a backend-only task still pays for the Applied AI Engineer role. Dynamic routing is a next step.
+- OpenRouter's free tier is capped at 50 requests/day per account (`free-models-per-day`), shared across every free model, not per-model. Each demo run makes 8 model calls; running discovery smoke tests plus two or three demo runs in one day exhausts the quota, after which every role's primary and fallback calls both 429 and the whole run falls back to offline output. This was hit directly while validating the per-role model assignments below and is expected, not a bug — the fix is to wait for the daily reset (`X-RateLimit-Reset` header) or add OpenRouter credits to raise the cap to 1000/day.
+- Each of the 7 roles now has a dedicated primary + fallback model instead of one shared model for every role — see `docs/model-assignments.md` for the assignment table and the reasoning behind each pick. All entries were confirmed against a live pull of `https://openrouter.ai/api/v1/models` on 2026-07-29, filtered to true zero-cost pricing. `deepseek/deepseek-v4-flash` was checked and excluded: it exists on OpenRouter but is not free. No model matching "big pickle" exists in the current catalog under that id or name.
+- The runner (`scripts/run_demo.py`) now correctly reports `"status": "degraded"` (not a false `"success"`) when a role's primary and fallback models both fail at the provider level and it has to fall back to offline output. Earlier runs mislabeled this case as success because the `degraded` list only tracked live output that was rejected for quality, not live calls that never returned content at all.
 
 ## Next-Week Roadmap
 

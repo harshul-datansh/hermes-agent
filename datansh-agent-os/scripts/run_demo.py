@@ -33,6 +33,61 @@ ROLE_SEQUENCE = [
     ("Master Orchestrator", "master-orchestrator.md", "08-final-master-report.md", "Synthesize the final Datansh execution plan."),
 ]
 
+# Per-role model assignment. Sourced from a live pull of https://openrouter.ai/api/v1/models
+# (see docs/model-assignments.md for the full rationale and the raw candidate list). Every
+# entry here must be a zero-cost model (pricing.prompt == "0" and pricing.completion == "0")
+# confirmed against that live catalog on 2026-07-29 -- guessed or half-remembered model IDs are
+# not acceptable here because a wrong ID either 400s or silently bills a paid endpoint.
+# `nvidia/nemotron-3.5-content-safety:free` and the random `openrouter/free` router are
+# deliberately excluded from this pool: the content-safety model is a moderation classifier, not
+# a generation model, and is the leading suspect for the "User Safety: safe" fragment seen when
+# the run relied on the random router (see docs/limitations-and-next-steps.md).
+ROLE_MODELS = {
+    "Master Orchestrator": {
+        "primary": "nvidia/nemotron-3-ultra-550b-a55b:free",
+        "fallback": "nvidia/nemotron-3-super-120b-a12b:free",
+        "why": "1M context holds all upstream role output without clipping; highest benchmarked intelligence/coding/agentic scores in the free pool; explicitly billed as a reasoning-and-orchestration model.",
+    },
+    "Product/Project Manager": {
+        "primary": "google/gemma-4-31b-it:free",
+        "fallback": "google/gemma-4-26b-a4b-it:free",
+        "why": "General-purpose instruction-tuned model rather than a coding specialist -- matches writing acceptance criteria and milestones in plain language.",
+    },
+    "Researcher": {
+        "primary": "nvidia/nemotron-3-super-120b-a12b:free",
+        "fallback": "inclusionai/ling-3.0-flash:free",
+        "why": "Generalist reasoning model with response_format/structured_outputs support and a 262K window for source material.",
+    },
+    "Applied AI Engineer": {
+        "primary": "inclusionai/ling-3.0-flash:free",
+        "fallback": "nvidia/nemotron-3-super-120b-a12b:free",
+        "why": "Purpose-built for production-scale agentic inference -- closest fit for reasoning about retrieval, latency, and cost budgets.",
+    },
+    "Developer": {
+        "primary": "poolside/laguna-s-2.1:free",
+        "fallback": "poolside/laguna-xs-2.1:free",
+        "why": "Dedicated coding-agent model (70.2% Terminal-Bench 2.1); fallback is the same lineage's smaller sibling for when the larger one is rate-limited.",
+    },
+    "Reviewer/QA": {
+        "primary": "cohere/north-mini-code:free",
+        "fallback": "poolside/laguna-xs-2.1:free",
+        "why": "A second coding model from a different lineage than the Developer's, so the reviewer doesn't share the generator's blind spots.",
+    },
+    "Memory Curator": {
+        "primary": "nvidia/nemotron-nano-9b-v2:free",
+        "fallback": "google/gemma-4-26b-a4b-it:free",
+        "why": "Small and fast, with response_format/structured_outputs support -- targets the no_markdown_sections rejection seen in earlier testing.",
+    },
+}
+
+
+def resolve_role_models(agent: str) -> tuple[str, str]:
+    config = ROLE_MODELS.get(agent)
+    if config:
+        return config["primary"], config["fallback"]
+    default = get_env("DATANSH_DEFAULT_MODEL", "openrouter/free")
+    return default, default
+
 FINAL_REPORT_FILE = "08-final-master-report.md"
 
 # Guardrails against weak free models. Two failure modes were observed on live runs:
@@ -396,9 +451,11 @@ def update_memory(run: str, curator_output: str) -> None:
 
 
 def main() -> int:
-    model = get_env("DATANSH_DEFAULT_MODEL", "openrouter/free")
-    if not is_free_model(model):
-        raise SystemExit(f"Refusing non-free model for POC: {model}")
+    all_models = {m for cfg in ROLE_MODELS.values() for m in (cfg["primary"], cfg["fallback"])}
+    all_models.add(get_env("DATANSH_DEFAULT_MODEL", "openrouter/free"))
+    for candidate in all_models:
+        if not is_free_model(candidate):
+            raise SystemExit(f"Refusing non-free model for POC: {candidate}")
 
     run = run_id()
     run_dir = RUNS_DIR / run
@@ -406,25 +463,42 @@ def main() -> int:
     task = read_text(ROOT / "demo" / "input.md")
     write_text(run_dir / "00-input.md", task)
 
-    append_event(run, "System", "task_received", "running", "Run Datansh demo task", "Demo task received", str(run_dir / "00-input.md"), model)
+    append_event(run, "System", "task_received", "running", "Run Datansh demo task", "Demo task received", str(run_dir / "00-input.md"))
 
     previous: dict[str, str] = {}
     outputs: list[str] = []
     started_at = datetime.now().isoformat(timespec="seconds")
     live_modes: list[str] = []
     degraded: list[str] = []
+    models_used: dict[str, str] = {}
 
     for agent, role_file, filename, assignment in ROLE_SEQUENCE:
+        primary_model, fallback_model = resolve_role_models(agent)
         output_path = run_dir / filename
-        append_event(run, agent, "agent_started", "running", assignment, f"{agent} started", str(output_path), model)
+        append_event(run, agent, "agent_started", "running", assignment, f"{agent} started", str(output_path), primary_model)
         prompt = build_prompt(agent, role_file, task, previous)
-        append_event(run, agent, "model_call_started", "running", assignment, "Model call started", str(output_path), model)
-        content, metadata = call_openrouter(prompt, model)
-        live_modes.append(metadata.get("mode", "unknown"))
+        append_event(run, agent, "model_call_started", "running", assignment, "Model call started", str(output_path), primary_model)
+        content, metadata = call_openrouter(prompt, primary_model)
+        used_model = primary_model
+        if not content and metadata.get("mode") == "live_failed" and fallback_model != primary_model:
+            print(f"  ~ {agent} primary model {primary_model} failed ({metadata.get('error') or metadata.get('status')}); trying fallback {fallback_model}")
+            content, metadata = call_openrouter(prompt, fallback_model)
+            used_model = fallback_model
+        models_used[agent] = used_model
+        call_mode = metadata.get("mode", "unknown")
+        live_modes.append(call_mode)
         status = "success"
         if not content:
             content = offline_output(agent, task, previous)
             metadata["fallback"] = "offline_poc_output"
+            if call_mode == "live_failed":
+                # Both primary and fallback models failed at the provider level
+                # (rate limit, timeout, HTTP error) -- this is a real degradation
+                # from the intended live run, not the documented no-API-key offline
+                # mode, so it must not be reported as a silent "success".
+                status = "degraded"
+                degraded.append(f"{agent}: live_call_failed({metadata.get('error') or metadata.get('status')})")
+                print(f"  ! {agent} live call failed after fallback; used offline output")
         else:
             reason = reject_reason(content)
             if reason:
@@ -439,20 +513,20 @@ def main() -> int:
         write_text(output_path, content)
         previous[agent if filename != FINAL_REPORT_FILE else "Final Master Report"] = content
         outputs.append(str(output_path.relative_to(ROOT)))
-        append_event(run, agent, "agent_completed", status, assignment, f"{agent} completed", str(output_path), model, metadata)
+        append_event(run, agent, "agent_completed", status, assignment, f"{agent} completed", str(output_path), used_model, metadata)
         time.sleep(0.2)
 
     final = previous["Final Master Report"]
     write_text(ROOT / "demo" / "final-output.md", final)
     update_memory(run, previous.get("Memory Curator", ""))
-    append_event(run, "Memory Curator", "memory_updated", "success", "Append durable brain entries", "Brain memory files updated", str(ROOT / "datansh-brain"), model)
+    append_event(run, "Memory Curator", "memory_updated", "success", "Append durable brain entries", "Brain memory files updated", str(ROOT / "datansh-brain"), models_used.get("Memory Curator"))
 
     metadata = {
         "run_id": run,
         "started_at": started_at,
         "ended_at": datetime.now().isoformat(timespec="seconds"),
         "provider": get_env("DATANSH_LLM_PROVIDER", "openrouter"),
-        "models": [model],
+        "models": models_used,
         "agents": [item[0] for item in ROLE_SEQUENCE],
         "status": "degraded" if degraded else "success",
         "modes": live_modes,
@@ -461,7 +535,7 @@ def main() -> int:
     }
     write_json(run_dir / "run-metadata.json", metadata)
     run_status = "degraded" if degraded else "success"
-    append_event(run, "System", "run_completed", run_status, "Complete Datansh Agent OS demo", "Run completed", str(ROOT / "demo" / "final-output.md"), model, metadata)
+    append_event(run, "System", "run_completed", run_status, "Complete Datansh Agent OS demo", "Run completed", str(ROOT / "demo" / "final-output.md"), None, metadata)
     print(f"Demo run completed: {run} ({run_status})")
     if degraded:
         print(f"Roles that fell back to offline output: {len(degraded)}")
