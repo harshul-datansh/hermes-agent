@@ -42,17 +42,37 @@ For this POC, keep models free-only: `openrouter/free` or explicit model IDs end
 
 ## What Is Included
 
-- `hermes-agent/`: local upstream Hermes Agent checkout.
-- `datansh-brain/`: local markdown memory vault.
-- `datansh-agents/`: role prompts for six Datansh agents.
+This directory lives inside the Datansh Hermes fork; the surrounding checkout is Hermes itself.
+
+- `datansh-brain/`: local markdown memory vault, including Datansh stack defaults and coding standards.
+- `datansh-agents/`: role prompts for the seven Datansh agents.
 - `scripts/`: setup, OpenRouter discovery, config audit, demo runner, launch helpers.
 - `monitor/`: Streamlit visual monitor reading structured events.
 - `demo/`: default input and generated outputs.
 - `docs/`: architecture, setup report, model summaries, demo script, limitations, screenshots folder.
 
+## Datansh Stack Configuration
+
+The agents are configured for how Datansh builds: Java 21 with Spring Boot 3 on the backend, React and Next.js App Router with TypeScript on the frontend, and applied AI shipped as production services rather than notebooks.
+
+Two files hold the stack knowledge:
+
+- `datansh-brain/00-company-context.md` — the house defaults for each layer of the stack.
+- `datansh-brain/03-coding-standards.md` — the per-stack rules agents apply and reviewers check against.
+
+Both are injected into every agent prompt as brain context, so changing the house standard is a single-file edit rather than a rewrite of seven prompts. Agents are instructed to treat these as starting assumptions and to defer to whatever a real repository actually does.
+
+## Agent Roles
+
+Master Orchestrator, Product/Project Manager, Researcher, Applied AI Engineer, Developer, Reviewer/QA, and Memory Curator. Roles run in sequence, each seeing the previous outputs.
+
+The Applied AI Engineer runs before the Developer deliberately — retrieval design, evaluation strategy, and cost budgets constrain the database schema and the API contract, so settling them after implementation planning means reworking it. Role definitions are in `datansh-brain/02-agent-roles.md`, and the routing sequence is `ROLE_SEQUENCE` in `scripts/run_demo.py`.
+
 ## Running The Demo
 
-The demo accepts the default task in `demo/input.md`, routes it through role-specific agents, writes individual outputs under `demo/runs/<run-id>/`, updates selected brain files, writes `demo/final-output.md`, and streams role status to `monitor/events.jsonl`.
+The reference task in `demo/input.md` is grounded document search for the Datansh client portal — a cross-cutting feature that exercises the Spring Boot backend, the Next.js frontend, and the retrieval/model layer in one run.
+
+The demo routes that task through the role agents, writes individual outputs under `demo/runs/<run-id>/`, updates selected brain files, writes `demo/final-output.md`, and streams role status to `monitor/events.jsonl`.
 
 If `OPENROUTER_API_KEY` is configured, the runner calls OpenRouter with the free-only model configured by `DATANSH_DEFAULT_MODEL`. If the key is blank, the runner uses deterministic offline POC responses and labels the run accordingly.
 

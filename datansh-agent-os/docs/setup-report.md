@@ -16,6 +16,18 @@ Prepared: 2026-07-28
 
 Native Windows can run this POC's scripts and monitor. WSL2 is still recommended for Hermes TUI/chat behavior because the embedded chat pane uses PTY functionality.
 
+## Workspace Layout
+
+The fork is the only thing in the workspace root, and the Datansh layer lives inside it:
+
+```text
+datansh_multi_agents/
+└── hermes-agent/            Datansh fork of NousResearch/hermes-agent
+    └── datansh-agent-os/    Datansh brain, agents, scripts, monitor, demo, docs
+```
+
+An earlier setup left a partial duplicate of `datansh-agent-os/` in the workspace root alongside an empty git scaffold. Both were removed; the copy inside the fork was the tracked, complete one. Run scripts from inside `hermes-agent/datansh-agent-os/` — all paths resolve relative to that directory, not to the workspace root.
+
 ## Hermes Fork Checkout
 
 | Field | Value |
@@ -39,10 +51,10 @@ Verified current docs and repository state:
 ## Commands Used
 
 ```powershell
-git clone/fetch https://github.com/NousResearch/hermes-agent.git datansh-agent-os/hermes-agent
-git -C datansh-agent-os/hermes-agent remote rename origin upstream
-git -C datansh-agent-os/hermes-agent switch -c codex/datansh-agent-os
-git -C datansh-agent-os/hermes-agent rev-parse HEAD
+git clone/fetch https://github.com/NousResearch/hermes-agent.git hermes-agent
+git -C hermes-agent remote rename origin upstream
+git -C hermes-agent switch -c codex/datansh-agent-os
+git -C hermes-agent rev-parse HEAD
 python --version
 node --version
 npm --version
