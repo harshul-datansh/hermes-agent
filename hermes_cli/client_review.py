@@ -16,9 +16,6 @@ import socket
 import subprocess
 import time
 import shutil
-import urllib.error
-import urllib.parse
-import urllib.request
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -1759,23 +1756,13 @@ def _alert_fingerprint(latest: dict[str, Any]) -> str:
     return hashlib.sha256(json.dumps(payload, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def _telegram_bot_token() -> str:
-    """Resolve inherited and Windows user-scoped Telegram configuration."""
-    token = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-    if token:
-        return token
-    if os.name == "nt":
-        try:
-            import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, "Environment") as key:
-                return str(winreg.QueryValueEx(key, "TELEGRAM_BOT_TOKEN")[0]).strip()
-        except (FileNotFoundError, OSError):
-            pass
-    return ""
-
-
 def send_run_alert(latest: dict[str, Any], config: dict[str, Any] | None = None, *, event: str | None = None) -> dict[str, Any]:
-    """Send at most one redacted Telegram alert for a completed run."""
+    """Send through Hermes's configured Telegram home channel.
+
+    The shared ``send_message_tool`` owns credentials, home-channel
+    resolution, adapter selection, retries, and message mirroring.  Client
+    review must not maintain a second Bot API implementation or destination.
+    """
     config = config or (latest.get("validation") or {}).get("config") or {}
     reconciliation = latest.get("reconciliation") if isinstance(latest.get("reconciliation"), dict) else {}
     findings = reconciliation.get("findings") or []
@@ -1794,34 +1781,33 @@ def send_run_alert(latest: dict[str, Any], config: dict[str, Any] | None = None,
     fingerprints = alert_state.setdefault("fingerprints", {})
     if not blockers and not always_alert and fingerprint in fingerprints:
         return {"sent": False, "suppressed": True, "reason": "finding fingerprint already alerted", "fingerprint": fingerprint}
-    chat_id = str(config.get("telegram_chat_id") or "").strip()
-    token = _telegram_bot_token()
-    if not chat_id or not token:
-        return {"sent": False, "reason": "Telegram chat or bot token is unavailable"}
-    payload = urllib.parse.urlencode({"chat_id": chat_id, "text": _telegram_message(latest, config, event)}).encode("utf-8")
-    request = urllib.request.Request(f"https://api.telegram.org/bot{token}/sendMessage", data=payload, method="POST")
+    message = _telegram_message(latest, config, event)
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
-            ok = bool(json.loads(response.read().decode("utf-8")).get("ok"))
-    except urllib.error.HTTPError as exc:
-        # Status is actionable (bad chat id vs. forbidden/invalid bot) while
-        # the response body and URL may contain sensitive details.
-        detail = ""
-        try:
-            body = json.loads(exc.read().decode("utf-8"))
-            detail = str(body.get("description") or "").strip()
-        except Exception:
-            pass
-        detail = re.sub(r"\b\d{7,}\b", "[chat-id]", detail)
-        return {"sent": False, "reason": f"Telegram API rejected message (HTTP {exc.code})" + (f": {detail}" if detail else "")}
+        # The review runner can be invoked directly by cron, outside the main
+        # Hermes CLI bootstrap. Load the same managed environment first so the
+        # canonical sender sees the normal profile-scoped Telegram settings.
+        from hermes_cli.config import get_hermes_home, load_config_readonly
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(hermes_home=get_hermes_home())
+        # Home-channel values are normal Hermes config keys (not secrets) and
+        # may live in config.yaml rather than .env.  Resolve them through the
+        # same config accessor used by the CLI before loading the adapter.
+        home_channel = load_config_readonly().get("TELEGRAM_HOME_CHANNEL")
+        if home_channel and not os.environ.get("TELEGRAM_HOME_CHANNEL"):
+            os.environ["TELEGRAM_HOME_CHANNEL"] = str(home_channel)
+        from tools.send_message_tool import send_message_tool
+        raw_result = send_message_tool({"action": "send", "target": "telegram", "message": message})
+        result = json.loads(raw_result) if isinstance(raw_result, str) else raw_result
+        if not isinstance(result, dict):
+            return {"sent": False, "reason": "Hermes Telegram channel returned an invalid result"}
+        if not result.get("success"):
+            reason = str(result.get("error") or result.get("reason") or "Hermes Telegram channel rejected message")
+            return {"sent": False, "reason": _redact(reason)}
     except Exception:
-        # Network exceptions can embed the request URL, including its bot
-        # token. Keep that detail out of every persisted artifact.
-        return {"sent": False, "reason": "Telegram send failed"}
-    if ok:
-        fingerprints[fingerprint] = time.time()
-        _write_json(alert_state_path, alert_state)
-    return {"sent": ok, "fingerprint": fingerprint}
+        return {"sent": False, "reason": "Hermes Telegram channel send failed"}
+    fingerprints[fingerprint] = time.time()
+    _write_json(alert_state_path, alert_state)
+    return {"sent": True, "fingerprint": fingerprint, "channel": "telegram:home"}
 
 
 def stable_finding_id(feature_id: str, path: str, rule_name: str, context: str) -> str:
