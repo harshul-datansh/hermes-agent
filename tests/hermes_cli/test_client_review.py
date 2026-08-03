@@ -394,6 +394,16 @@ def test_cosmetic_java_and_python_changes_are_reduced_without_hiding_code_change
     assert client_review._cosmetic_change_kind("A.java", "class A { int n = 1; }", "class A { int n = 2; }") is None
 
 
+def test_coverage_counts_alert_only_reviews_as_reviewed():
+    report = client_review.coverage_report([
+        {"changed_files": 2, "changed_lines": 20, "candidate_files": 2,
+         "candidate_hunks": 5, "reviewed_hunks": 5,
+         "classification": [{"hunks": 5, "alert_only": True}], "unreviewed": []}
+    ], {})
+    assert report["reviewed_hunks"] == 5
+    assert report["reviewed_pct"] == 100.0
+
+
 def test_integration_test_commands_reject_eval_and_accept_structured_tests():
     commands = client_review._safe_test_commands({"integration_tests": [
         {"command": ["python", "-c", "import os; print(os.environ)"]},

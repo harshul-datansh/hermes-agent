@@ -857,7 +857,11 @@ def coverage_report(branches: list[dict[str, Any]], reduction: dict[str, int]) -
     changed_files = sum(int(branch.get("changed_files", branch.get("candidate_files", 0))) for branch in branches)
     changed_lines = sum(int(branch.get("changed_lines", 0)) for branch in branches)
     candidates = sum(int(branch.get("candidate_hunks", branch.get("candidate_files", 0))) for branch in branches)
-    reviewed = sum(int(branch.get("reviewed_hunks", sum(int(row.get("hunks") or 1) for row in branch.get("classification", []) if not row.get("alert_only")))) for branch in branches)
+    # Alert-only work is still review work: it receives a read-only Luna pass
+    # and must count toward coverage.  Excluding it made a fully selected diff
+    # appear mostly unreviewed (for example, 10/462 despite zero unreviewed
+    # rows).
+    reviewed = sum(int(branch.get("reviewed_hunks", sum(int(row.get("hunks") or 1) for row in branch.get("classification", [])))) for branch in branches)
     return {"changed_files": changed_files, "changed_lines": changed_lines,
             "reduced_files": sum(reduction.values()), "reduction": reduction,
             "candidate_hunks": candidates, "candidate_files": sum(int(branch.get("candidate_files", 0)) for branch in branches),
@@ -997,7 +1001,18 @@ def _provision_review_workspace(repo: Path, controller: dict[str, Any], run_id: 
     workspace_root = Path(str(controller.get("worktree_root") or repo.parent / "hedgi-worktrees")).expanduser().resolve()
     target = workspace_root / run_id / work_item_id
     if target.exists():
-        return target, None if review_only else f"hermes/review/{run_id}-{work_item_id}-v3"
+        # Enqueue can be interrupted after creating a worktree but before the
+        # Kanban row is persisted. Reuse that exact tree on retry instead of
+        # failing on an existing path or leaking another worktree.
+        try:
+            existing_head = _git(target, "rev-parse", "HEAD").strip()
+            if existing_head != source_head:
+                raise ValueError(f"existing review workspace has {existing_head}, expected {source_head}: {target}")
+            if review_only:
+                return target, None
+            return target, f"hermes/review/{run_id}-{work_item_id}-v3"
+        except Exception:
+            raise
     target.parent.mkdir(parents=True, exist_ok=True)
     if review_only:
         _git_run(repo, "worktree", "add", "--detach", str(target), source_head)
@@ -1217,6 +1232,12 @@ def enqueue_latest() -> dict[str, Any]:
                     "review_only": review_only,
                     "worker_branch": worker_branch,
                 }
+                # Persist after every item. Worktree creation is expensive on
+                # Windows, so a timeout or restart must resume rather than
+                # discard already-materialized tasks.
+                latest["kanban_task_ids"] = task_ids
+                latest["task_map"] = task_map
+                _write_json(root() / "state.json", latest)
     finally:
         conn.close()
     latest["kanban_task_ids"] = task_ids
@@ -2736,7 +2757,7 @@ def run_once() -> dict[str, Any]:
                     )
                     lines = _changed_lines(repo, base, head)
                     candidate_hunks = sum(int(row.get("hunks") or 1) for row in classified + unreviewed)
-                    reviewed_hunks = sum(int(row.get("hunks") or 1) for row in classified if not row.get("alert_only"))
+                    reviewed_hunks = sum(int(row.get("hunks") or 1) for row in classified)
                     branch_results.append({"branch": branch, "role": role, "base": base, "head": head,
                                            "classification": classified, "unreviewed": unreviewed,
                                            "work_items": work_items(classified, branch),
