@@ -320,6 +320,18 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
+  it('reports a missing desktop bridge without throwing a browser TypeError', async () => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+
+    await expect(getStatus()).rejects.toThrow('Hermes desktop bridge unavailable')
+  })
+
+  it('skips the best-effort profile refresh when the desktop bridge is unavailable', async () => {
+    Reflect.deleteProperty(window, 'hermesDesktop')
+
+    await expect(refreshActiveProfile()).resolves.toBeUndefined()
+  })
+
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 

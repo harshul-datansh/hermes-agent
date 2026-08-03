@@ -109,8 +109,17 @@ interface ActiveProfileResponse {
 // Pull the running backend's current profile + the available profile list.
 // Best-effort: failures (backend not up yet) leave the prior values intact.
 export async function refreshActiveProfile(): Promise<void> {
+  const api = window.hermesDesktop?.api
+
+  // The desktop recovery UI can mount in a regular browser while its Electron
+  // preload bridge is unavailable. Profile refresh is best-effort, so there is
+  // nothing to fetch in that context.
+  if (!api) {
+    return
+  }
+
   try {
-    const res = await window.hermesDesktop.api<ActiveProfileResponse>({
+    const res = await api<ActiveProfileResponse>({
       path: '/api/profiles/active',
       timeoutMs: STARTUP_REQUEST_TIMEOUT_MS
     })

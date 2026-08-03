@@ -2406,6 +2406,149 @@ class OrchestrationSettingsBody(BaseModel):
     auto_promote_children: Optional[bool] = None
 
 
+class ClientReviewSettingsBody(BaseModel):
+    repository: str = ""
+    enabled: bool = False
+    upstream_remote: str = ""
+    fork_remote: str = ""
+    fork_trunk: str = ""
+    allow_shared_remote: bool = False
+    registry_source: str = "upstream-main"
+    driver_profile: str = "productdriver"
+    soul_profiles: dict[str, str] = {}
+
+
+class ClientReviewBootstrapBody(BaseModel):
+    repository: str
+    client_name: str
+    telegram_chat_id: str
+    prod_branch: Optional[str] = None
+
+
+class ClientReviewScheduleBody(BaseModel):
+    schedule: str
+    enabled: bool = True
+
+
+@router.get("/client-review")
+def get_client_review():
+    """Return the independent, profile-scoped client-review controller state."""
+    from hermes_cli import client_review
+    return client_review.status()
+
+
+@router.get("/client-review/schedules")
+def get_client_review_schedules():
+    from hermes_cli import client_review
+    return {"jobs": client_review.scheduled_runs()}
+
+
+@router.get("/client-review/doctor")
+def get_client_review_doctor():
+    from hermes_cli import client_review
+    return client_review.doctor()
+
+
+@router.put("/client-review/schedules")
+def set_client_review_schedule(payload: ClientReviewScheduleBody):
+    from hermes_cli import client_review
+    try:
+        return client_review.save_scheduled_run(payload.schedule, payload.enabled)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.put("/client-review")
+def set_client_review(payload: ClientReviewSettingsBody):
+    from hermes_cli import client_review
+    try:
+        return {"settings": client_review.save_settings(payload.model_dump())}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/client-review/bootstrap")
+def bootstrap_client_review(payload: ClientReviewBootstrapBody):
+    """Explicit setup action; never used by normal client-review runs."""
+    from hermes_cli import client_review
+    try:
+        return client_review.bootstrap(
+            Path(payload.repository), client_name=payload.client_name,
+            telegram_chat_id=payload.telegram_chat_id, prod_branch=payload.prod_branch,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/client-review/run")
+def run_client_review():
+    """Run the guarded, read-only intake stage.  Invalid input aborts safely."""
+    from hermes_cli import client_review
+    try:
+        return client_review.run_once()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+
+
+@router.post("/client-review/enqueue")
+def enqueue_client_review():
+    """Create idempotent Kanban work items for the latest reviewed intake."""
+    from hermes_cli import client_review
+    try:
+        return client_review.enqueue_latest()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/client-review/reconcile")
+def reconcile_client_review():
+    """Collect worker evidence; this endpoint never merges client changes."""
+    from hermes_cli import client_review
+    try:
+        return client_review.reconcile_work_items()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/client-review/integrate")
+def integrate_client_review():
+    """Apply only reconciled, evidenced branches through the integration gate."""
+    from hermes_cli import client_review
+    try:
+        return client_review.integrate_reconciled()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/client-review/full-suite")
+def full_suite_client_review():
+    """Run the final structured full-suite checkpoint on the integration tree."""
+    from hermes_cli import client_review
+    try:
+        return client_review.full_suite_checkpoint()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.post("/client-review/deliver")
+def deliver_client_review():
+    """Create or update fork-only PRs for integrated client-review work."""
+    from hermes_cli import client_review
+    try:
+        return client_review.deliver_latest()
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@router.get("/client-review/observability")
+def get_client_review_observability(limit: int = 100):
+    """Live/history feed for client-review tasks, events, runs, and learning."""
+    from hermes_cli import client_review
+    return client_review.orchestration_observability(max(1, min(limit, 500)))
+
+
 @router.get("/orchestration")
 def get_orchestration_settings():
     """Return the current kanban orchestration knobs from config.yaml

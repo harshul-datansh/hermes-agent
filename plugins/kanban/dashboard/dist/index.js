@@ -1066,6 +1066,8 @@
             return updateBoard(board, payload).then(function () { setShowBoardSettings(false); });
           },
         }) : null,
+        h(ClientReviewPanel, null),
+        h(ClientReviewObservabilityPanel, null),
         h(OrchestrationPanel, null),
         h(AttentionStrip, {
           boardData,
@@ -1547,6 +1549,279 @@
       title: "Open Hermes Kanban docs in a new tab",
       "aria-label": "Hermes Kanban documentation",
     }, "?");
+  }
+
+  // Client-review controller. It is intentionally separate from task routing:
+  // it owns a guarded, evidence-first review pipeline for a client checkout.
+  function ClientReviewPanel() {
+    const [open, setOpen] = useState(false);
+    const [data, setData] = useState(null);
+    const [repository, setRepository] = useState("");
+    const [enabled, setEnabled] = useState(false);
+    const [upstreamRemote, setUpstreamRemote] = useState("");
+    const [forkRemote, setForkRemote] = useState("");
+    const [forkTrunk, setForkTrunk] = useState("");
+    const [allowSharedRemote, setAllowSharedRemote] = useState(false);
+    const [registrySource, setRegistrySource] = useState("upstream-main");
+    const [driverProfile, setDriverProfile] = useState("productdriver");
+    const [soulProfiles, setSoulProfiles] = useState({});
+    const [cronSchedule, setCronSchedule] = useState("0 9 * * 1-5");
+    const [cronEnabled, setCronEnabled] = useState(true);
+    const [cronJob, setCronJob] = useState(null);
+    const [clientName, setClientName] = useState("");
+    const [telegramChatId, setTelegramChatId] = useState("");
+    const [prodBranch, setProdBranch] = useState("release/v2.1.11");
+    const [message, setMessage] = useState("");
+    const [doctorData, setDoctorData] = useState(null);
+    const load = useCallback(function () {
+      return Promise.all([SDK.fetchJSON(`${API}/client-review`), SDK.fetchJSON(`${API}/client-review/schedules`), SDK.fetchJSON(`${API}/client-review/doctor`)]).then(function (values) {
+        const value = values[0]; const schedules = values[1]; const job = (schedules.jobs || [])[0] || null;
+        setDoctorData(values[2] || null);
+        setData(value); setRepository((value.settings && value.settings.repository) || "");
+        setEnabled(!!(value.settings && value.settings.enabled));
+        setUpstreamRemote((value.settings && value.settings.upstream_remote) || "");
+        setForkRemote((value.settings && value.settings.fork_remote) || "");
+        setForkTrunk((value.settings && value.settings.fork_trunk) || "");
+        setAllowSharedRemote(!!(value.settings && value.settings.allow_shared_remote));
+        setRegistrySource((value.settings && value.settings.registry_source) || "upstream-main");
+        setDriverProfile((value.settings && value.settings.driver_profile) || "productdriver");
+        setSoulProfiles((value.settings && value.settings.soul_profiles) || {});
+        setCronJob(job); if (job) { setCronSchedule(job.schedule_display || job.schedule || ""); setCronEnabled(job.enabled !== false && job.state !== "paused"); }
+      }).catch(function (err) { setMessage("Could not load client review: " + parseApiErrorMessage(err)); });
+    }, []);
+    useEffect(function () { load(); }, [load]);
+    const save = function () {
+      SDK.fetchJSON(`${API}/client-review`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository: repository, enabled: enabled, upstream_remote: upstreamRemote, fork_remote: forkRemote, fork_trunk: forkTrunk, allow_shared_remote: allowSharedRemote, registry_source: registrySource, driver_profile: driverProfile, soul_profiles: soulProfiles }) })
+        .then(function () { setMessage("Saved."); return load(); })
+        .catch(function (err) { setMessage("Save failed: " + parseApiErrorMessage(err)); });
+    };
+    const run = function () {
+      SDK.fetchJSON(`${API}/client-review/run`, { method: "POST" })
+        .then(function (result) { setMessage(result.status === "reviewed" ? "Intake review completed." : "Run stopped safely; fix validation issues."); return load(); })
+        .catch(function (err) { setMessage("Run not started: " + parseApiErrorMessage(err)); });
+    };
+    const enqueue = function () {
+      SDK.fetchJSON(`${API}/client-review/enqueue`, { method: "POST" })
+        .then(function (result) { setMessage(`${result.count || 0} work item(s) queued on Kanban.`); return load(); })
+        .catch(function (err) { setMessage("Could not queue work: " + parseApiErrorMessage(err)); });
+    };
+    const reconcile = function () {
+      SDK.fetchJSON(`${API}/client-review/reconcile`, { method: "POST" })
+        .then(function (result) { setMessage(`${(result.accepted_task_ids || []).length} evidenced item(s); ${(result.rejected || []).length} rejected.`); return load(); })
+        .catch(function (err) { setMessage("Could not reconcile work: " + parseApiErrorMessage(err)); });
+    };
+    const integrate = function () {
+      SDK.fetchJSON(`${API}/client-review/integrate`, { method: "POST" })
+        .then(function (result) { setMessage(`${(result.integrated_task_ids || []).length} item(s) integrated; ${(result.exceptions || []).length} ejected for review.`); return load(); })
+        .catch(function (err) { setMessage("Could not integrate work: " + parseApiErrorMessage(err)); });
+    };
+    const fullSuite = function () {
+      SDK.fetchJSON(`${API}/client-review/full-suite`, { method: "POST" })
+        .then(function (result) { setMessage(`Full-suite checkpoint ${result.status || "completed"}.`); return load(); })
+        .catch(function (err) { setMessage("Could not run full suite: " + parseApiErrorMessage(err)); });
+    };
+    const deliver = function () {
+      SDK.fetchJSON(`${API}/client-review/deliver`, { method: "POST" })
+        .then(function (result) { setMessage(`Delivery PR ${result.day_pr && result.day_pr.action || "updated"}: ${result.day_pr && result.day_pr.url || ""}`); return load(); })
+        .catch(function (err) { setMessage("Could not create/update delivery PR: " + parseApiErrorMessage(err)); });
+    };
+    const saveSchedule = function () {
+      SDK.fetchJSON(`${API}/client-review/schedules`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ schedule: cronSchedule, enabled: cronEnabled }) })
+        .then(function (result) { setCronJob(result.job || null); setMessage("Cost-free cron intake saved."); return load(); })
+        .catch(function (err) { setMessage("Cron schedule failed: " + parseApiErrorMessage(err)); });
+    };
+    const bootstrap = function () {
+      SDK.fetchJSON(`${API}/client-review/bootstrap`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ repository: repository, client_name: clientName, telegram_chat_id: telegramChatId, prod_branch: prodBranch }) })
+        .then(function (result) { setMessage(result.warning || "Client review files created. Add feature ownership, then save and enable."); })
+        .catch(function (err) { setMessage("Bootstrap failed: " + parseApiErrorMessage(err)); });
+    };
+    const state = data && data.state;
+    return h(Card, { className: "p-3" }, h(CardContent, { className: "p-2 flex flex-col gap-2" },
+      h("div", { className: "flex items-center justify-between" },
+        h("div", null, h("strong", null, "Client change review"), h("div", { className: "text-xs text-muted-foreground" }, "Guarded QA/production intake, evidence and state.")),
+        h("button", { type: "button", className: "underline text-sm", onClick: function () { setOpen(!open); } }, open ? "Hide" : "Manage")
+      ),
+      state ? h("div", { className: "text-xs" }, `Last run: ${state.status || "unknown"}${state.changed_files != null ? ` — ${state.changed_files} files / ${state.changed_lines} lines` : ""}`) : null,
+      open ? h("div", { className: "flex flex-col gap-2 text-sm" },
+        h(Label, null, "Client repository checkout"),
+        h(Input, { value: repository, placeholder: "C:\\path\\to\\client-fork", onChange: function (e) { setRepository(e.target.value); } }),
+        h(Label, null, "Read-only upstream remote"),
+        h(Input, { value: upstreamRemote, placeholder: "upstream", onChange: function (e) { setUpstreamRemote(e.target.value); } }),
+        h(Label, null, "Writable fork remote and trunk"),
+        h("div", { className: "flex gap-2" }, h(Input, { value: forkRemote, placeholder: "origin", onChange: function (e) { setForkRemote(e.target.value); } }), h(Input, { value: forkTrunk, placeholder: "hedgi", onChange: function (e) { setForkTrunk(e.target.value); } })),
+        h("label", { className: "flex items-center gap-2 text-xs" }, h("input", { type: "checkbox", checked: allowSharedRemote, onChange: function (e) { setAllowSharedRemote(e.target.checked); } }), "Use one remote for upstream and fork (writes remain restricted to the configured trunk and Hermes branches)"),
+        h("label", { className: "flex flex-col gap-1 text-xs" }, "Feature registry source", h("select", { value: registrySource, onChange: function (e) { setRegistrySource(e.target.value); } }, h("option", { value: "upstream-main" }, "upstream main (default)"), h("option", { value: "working-tree" }, "local working tree (explicit shared-repo mode)"))),
+        h(Label, null, "Driver soul (product manager + product engineer)"),
+        h(Input, { value: driverProfile, placeholder: "productdriver", onChange: function (e) { setDriverProfile(e.target.value); } }),
+        h("details", null, h("summary", { className: "cursor-pointer text-xs" }, "Subagent soul assignments"),
+          h("div", { className: "mt-2 grid grid-cols-2 gap-2" }, ["product_manager", "product_engineer", "quality_engineer", "security_reviewer"].map(function (role) {
+            return h("div", { key: role, className: "flex flex-col gap-1" }, h(Label, { className: "text-xs" }, role.replace(/_/g, " ")), h(Input, { value: soulProfiles[role] || "", placeholder: role.replace(/_/g, ""), onChange: function (e) { setSoulProfiles(function (old) { return Object.assign({}, old, { [role]: e.target.value }); }); } }));
+          }))
+        ),
+        h("details", null, h("summary", { className: "cursor-pointer text-xs" }, "First-time setup"),
+          h("div", { className: "mt-2 flex flex-col gap-2" },
+            h(Input, { value: clientName, placeholder: "Client name", onChange: function (e) { setClientName(e.target.value); } }),
+            h(Input, { value: prodBranch, placeholder: "Production / QA release branch", onChange: function (e) { setProdBranch(e.target.value); } }),
+            h(Input, { value: telegramChatId, placeholder: "Telegram chat ID", onChange: function (e) { setTelegramChatId(e.target.value); } }),
+            h(Button, { onClick: bootstrap }, "Create starter config and registry"),
+            h("div", { className: "text-xs text-muted-foreground" }, "Existing client configuration is read-only to the pipeline. Ask the client maintainers to set the Telegram chat ID there.")
+          )
+        ),
+        h("div", { className: "border rounded-md p-2 flex flex-col gap-2" },
+          h("div", null, h("strong", { className: "text-sm" }, "Scheduled intake"), h("div", { className: "text-xs text-muted-foreground" }, "Runs the guarded intake script without an AI call; workers are only created when work is queued.")),
+          h("div", { className: "flex gap-2" }, h(Input, { value: cronSchedule, placeholder: "0 9 * * 1-5", onChange: function (e) { setCronSchedule(e.target.value); } }), h(Button, { variant: "secondary", onClick: saveSchedule, disabled: !repository }, cronJob ? "Update cron" : "Create cron")),
+          h("label", { className: "flex items-center gap-2 text-xs" }, h("input", { type: "checkbox", checked: cronEnabled, onChange: function (e) { setCronEnabled(e.target.checked); } }), "Enabled"),
+          cronJob && cronJob.next_run_at ? h("div", { className: "text-xs text-muted-foreground" }, `Next run: ${cronJob.next_run_at}`) : null
+        ),
+        h("label", { className: "flex items-center gap-2" }, h("input", { type: "checkbox", checked: enabled, onChange: function (e) { setEnabled(e.target.checked); } }), "Enable pipeline"),
+        doctorData ? h("div", { className: `text-xs ${doctorData.ready ? "text-emerald-600" : "text-destructive"}` }, `Readiness: ${doctorData.ready ? "ready" : "blocked"} · ${(doctorData.checks || []).filter(function (check) { return !check.ok && !check.optional; }).map(function (check) { return check.name; }).join(", ") || "all required checks pass"}`) : null,
+        h("div", { className: "flex flex-wrap gap-2" }, h(Button, { onClick: save }, "Save"), h(Button, { onClick: run, disabled: !enabled }, "Run guarded intake"), h(Button, { onClick: enqueue, disabled: !(data && data.state && data.state.status === "reviewed") }, "Queue review work"), h(Button, { variant: "secondary", onClick: reconcile, disabled: !(data && data.state && data.state.kanban_task_ids && data.state.kanban_task_ids.length) }, "Reconcile evidence"), h(Button, { variant: "secondary", onClick: integrate, disabled: !(data && data.state && data.state.reconciliation && ((data.state.reconciliation.accepted_task_ids && data.state.reconciliation.accepted_task_ids.length) || (data.state.reconciliation.reviewed_only_task_ids && data.state.reconciliation.reviewed_only_task_ids.length))) }, "Finalize reviewed work"), h(Button, { variant: "secondary", onClick: fullSuite, disabled: !(data && data.state && data.state.integration && data.state.integration.integrated_task_ids && data.state.integration.integrated_task_ids.length) }, "Run full suite"), h(Button, { variant: "secondary", onClick: deliver, disabled: !(data && data.state && data.state.full_suite && data.state.full_suite.status === "passed") }, "Create/update PR")),
+        message ? h("div", { className: "text-xs text-muted-foreground" }, message) : null,
+        data && data.validation && !data.validation.ok ? h("ul", { className: "text-xs text-destructive" }, (data.validation.errors || []).map(function (e, i) { return h("li", { key: i }, e); })) : null,
+        data && data.topology && !data.topology.ok ? h("ul", { className: "text-xs text-destructive" }, (data.topology.errors || []).map(function (e, i) { return h("li", { key: "topology-" + i }, e); })) : null,
+        data && data.souls && !data.souls.ok ? h("ul", { className: "text-xs text-destructive" }, (data.souls.errors || []).map(function (e, i) { return h("li", { key: "soul-" + i }, e); })) : null,
+        data && data.validation && data.validation.notes && data.validation.notes.length ? h("ul", { className: "text-xs text-muted-foreground" }, data.validation.notes.map(function (e, i) { return h("li", { key: i }, e); })) : null,
+      ) : null
+    ));
+  }
+
+  // Production observability view for client-review orchestration. This is a
+  // trace explorer, not a hidden-chain-of-thought viewer: it shows durable
+  // handoff summaries, tool/event activity, tests, and learning records.
+  function ClientReviewObservabilityPanel() {
+    const [open, setOpen] = useState(false);
+    const [view, setView] = useState("live");
+    const [feed, setFeed] = useState(null);
+    const [selected, setSelected] = useState(null);
+    const [message, setMessage] = useState("");
+    const [query, setQuery] = useState("");
+    const [eventFilter, setEventFilter] = useState("all");
+    const load = useCallback(function () {
+      return SDK.fetchJSON(`${API}/client-review/observability?limit=100`).then(function (value) {
+        setFeed(value || { tasks: [], learning: [] });
+        if (selected) {
+          const fresh = (value.tasks || []).find(function (task) { return task.id === selected.id; });
+          if (fresh) setSelected(fresh);
+        }
+      }).catch(function (err) { setMessage("Could not load orchestration history: " + parseApiErrorMessage(err)); });
+    }, [selected]);
+    useEffect(function () {
+      load();
+      if (!open) return undefined;
+      const timer = setInterval(load, view === "live" ? 3000 : 15000);
+      return function () { clearInterval(timer); };
+    }, [open, view, load]);
+    const tasks = (feed && feed.tasks) || [];
+    const normalizedQuery = query.trim().toLowerCase();
+    const visible = tasks.filter(function (task) {
+      const liveMatch = view === "live" ? ["ready", "running", "todo", "blocked"].indexOf(task.status) >= 0 : true;
+      const queryMatch = !normalizedQuery || [task.title, task.assignee, task.created_by, task.status, task.branch_name].filter(Boolean).join(" ").toLowerCase().indexOf(normalizedQuery) >= 0;
+      return liveMatch && queryMatch;
+    });
+    const active = tasks.filter(function (task) { return ["ready", "running", "todo"].indexOf(task.status) >= 0; }).length;
+    const completed = tasks.filter(function (task) { return task.status === "done"; }).length;
+    const souls = (feed && feed.souls) || [];
+    const sessions = (feed && feed.sessions) || [];
+    const sessionGroups = Object.values(sessions.reduce(function (groups, event) {
+      const id = event.session_id || "unknown-session";
+      if (!groups[id]) groups[id] = [];
+      groups[id].push(event);
+      return groups;
+    }, {})).filter(function (events) { return !normalizedQuery || String(events[0].session_id || "").toLowerCase().indexOf(normalizedQuery) >= 0; });
+    const timelineEvents = selected ? (selected.events || []).concat((selected.tool_calls || []).map(function (call, index) { return { id: "call-" + index, kind: "tool_call", payload: JSON.stringify(call) }; })) : [];
+    const toolEvents = timelineEvents.filter(function (event) { return eventFilter === "all" || (eventFilter === "tools" ? /tool|call|terminal|browser/i.test(event.kind + " " + event.payload) : !/tool|call|terminal|browser/i.test(event.kind + " " + event.payload)); });
+    return h(Card, { className: "p-3" }, h(CardContent, { className: "p-2 flex flex-col gap-3" },
+      h("div", { className: "flex items-center justify-between" },
+        h("div", null, h("strong", null, "Orchestration activity"), h("div", { className: "text-xs text-muted-foreground" }, "Live workers, durable history, evidence and Hedgi-brain learnings.")),
+        h("button", { type: "button", className: "underline text-sm", onClick: function () { setOpen(!open); } }, open ? "Hide" : "Open explorer")
+      ),
+      h("div", { className: "border rounded-md p-2" },
+        h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-2" }, `Soul routing${feed && feed.driver_profile ? ` · driver: ${feed.driver_profile}` : ""}`),
+        souls.length ? h("div", { className: "flex flex-wrap gap-2" }, souls.map(function (soul) {
+          return h("div", { key: soul.role, className: `rounded border px-2 py-1 text-xs ${soul.available ? "" : "border-destructive text-destructive"}` },
+            h("span", { className: "font-medium" }, soul.role.replace(/_/g, " ")),
+            h("span", { className: "text-muted-foreground" }, ` · ${soul.profile || soul.error || "unconfigured"}`),
+            soul.is_driver ? h("span", { className: "ml-1 rounded bg-muted px-1" }, "driver") : null,
+            soul.active_tasks ? h("span", { className: "ml-1" }, ` · ${soul.active_tasks} active`) : null
+          );
+        })) : h("div", { className: "text-xs text-muted-foreground" }, "Loading soul assignments…")
+      ),
+      open && feed && feed.controller ? h("div", { className: "border rounded-md p-2" },
+        h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-2" }, "Controller run"),
+        h("div", { className: "flex flex-wrap gap-x-4 gap-y-1 text-sm" },
+          h("span", null, `status: ${feed.controller.status || "not started"}`),
+          feed.controller.delivery ? h("span", { className: "font-medium" }, `delivery: ${feed.controller.delivery.status}`) : null,
+          feed.controller.integration ? h("span", { className: "text-muted-foreground" }, `integrated: ${(feed.controller.integration.integrated_task_ids || []).length}`) : null,
+          feed.controller.reconciliation ? h("span", { className: "text-muted-foreground" }, `reviewed-only: ${(feed.controller.reconciliation.reviewed_only_task_ids || []).length}`) : null,
+          feed.controller.coverage ? h("span", { className: "text-muted-foreground" }, `coverage: ${feed.controller.coverage.reviewed_pct || 0}% reviewed`) : null,
+          feed.controller.cost ? h("span", { className: "text-muted-foreground" }, `cost: $${Number(feed.controller.cost.used_usd || 0).toFixed(2)} / $${Number(feed.controller.cost.max_usd || 0).toFixed(2)}`) : null,
+          feed.controller.shadow ? h("span", { className: "text-muted-foreground" }, `shadow: ${feed.controller.shadow.matched || 0}/${feed.controller.shadow.pairs || 0} matched`) : null,
+          feed.controller.shadow_calibration && Object.keys(feed.controller.shadow_calibration).length ? h("span", { className: "text-muted-foreground" }, `calibration: ${Object.values(feed.controller.shadow_calibration).filter(function (item) { return item.promoted_to_luna; }).length} promoted`) : null,
+          feed.controller.full_suite ? h("span", { className: feed.controller.full_suite.status === "passed" ? "text-muted-foreground" : "text-destructive" }, `full suite: ${feed.controller.full_suite.status}`) : null,
+          feed.controller.delivery_record && feed.controller.delivery_record.day_pr ? h("span", { className: "text-muted-foreground" }, "PR recorded") : null,
+          feed.controller.run_id ? h("span", { className: "text-muted-foreground" }, `run: ${feed.controller.run_id}`) : null,
+          feed.controller.day_branch ? h("span", { className: "text-muted-foreground" }, `day branch: ${feed.controller.day_branch}`) : null
+        ),
+        (feed.controller.errors || []).length ? h("div", { className: "text-xs text-destructive mt-2" }, (feed.controller.errors || []).join(" Â· ")) : null,
+        (feed.controller.notes || []).length ? h("div", { className: "text-xs text-muted-foreground mt-2" }, (feed.controller.notes || []).join(" Â· ")) : null,
+        (feed.controller.branches || []).length ? h("div", { className: "flex flex-wrap gap-2 mt-2" }, (feed.controller.branches || []).map(function (branch) {
+          return h("span", { key: `${branch.branch}-${branch.role}`, className: "rounded border px-2 py-1 text-xs" }, `${branch.role || "branch"}: ${branch.branch} Â· ${branch.work_items || 0} work items Â· ${branch.unreviewed_hunks || 0} unreviewed hunks`);
+        })) : null
+      ) : null,
+      open ? h("div", { className: "flex flex-col gap-3" },
+        h("div", { className: "flex gap-2 items-center" },
+          h(Button, { variant: view === "live" ? "default" : "secondary", onClick: function () { setView("live"); } }, "Live"),
+          h(Button, { variant: view === "history" ? "default" : "secondary", onClick: function () { setView("history"); } }, "History"),
+          h(Button, { variant: "secondary", onClick: load }, "Refresh"),
+          h("span", { className: "text-xs text-muted-foreground ml-auto" }, feed ? `Updated ${new Date((feed.generated_at || 0) * 1000).toLocaleTimeString()}` : "Loading…")
+        ),
+        h("div", { className: "flex flex-wrap gap-2 items-center" },
+          h(Input, { className: "max-w-sm", value: query, placeholder: "Search agent, task, branch or status", onChange: function (e) { setQuery(e.target.value); } }),
+          h("span", { className: "text-xs text-muted-foreground" }, "Timeline:"),
+          h(Button, { variant: eventFilter === "all" ? "default" : "secondary", onClick: function () { setEventFilter("all"); } }, "All"),
+          h(Button, { variant: eventFilter === "tools" ? "default" : "secondary", onClick: function () { setEventFilter("tools"); } }, "Tools"),
+          h(Button, { variant: eventFilter === "lifecycle" ? "default" : "secondary", onClick: function () { setEventFilter("lifecycle"); } }, "Lifecycle")
+        ),
+        h("div", { className: "grid grid-cols-2 md:grid-cols-4 gap-2" },
+          h("div", { className: "rounded-md border p-2" }, h("div", { className: "text-xl font-semibold" }, active), h("div", { className: "text-xs text-muted-foreground" }, "Active agents")),
+          h("div", { className: "rounded-md border p-2" }, h("div", { className: "text-xl font-semibold" }, completed), h("div", { className: "text-xs text-muted-foreground" }, "Completed")),
+          h("div", { className: "rounded-md border p-2" }, h("div", { className: "text-xl font-semibold" }, (feed && feed.learning || []).length), h("div", { className: "text-xs text-muted-foreground" }, "Learnings")),
+          h("div", { className: "rounded-md border p-2" }, h("div", { className: "text-xl font-semibold" }, (feed && feed.sessions || []).length), h("div", { className: "text-xs text-muted-foreground" }, "Session events"))
+        ),
+        h("div", { className: "grid grid-cols-1 md:grid-cols-2 gap-3" },
+          h("div", { className: "border rounded-md divide-y max-h-80 overflow-auto" },
+            visible.length ? visible.map(function (task) { return h("button", { type: "button", key: task.id, className: "w-full text-left p-2 hover:bg-muted/50", onClick: function () { setSelected(task); } },
+              h("div", { className: "flex items-center gap-2" }, h("span", { className: "font-medium truncate" }, task.title), h("span", { className: "text-xs rounded px-1.5 py-0.5 bg-muted ml-auto" }, task.status)),
+              h("div", { className: "text-xs text-muted-foreground mt-1" }, `${task.assignee || "unassigned"} (${(task.soul_role || "unassigned").replace(/_/g, " ")}) · ${(task.events || []).length} events · ${(task.runs || []).length} runs`)
+            ); }) : h("div", { className: "p-4 text-sm text-muted-foreground" }, "No orchestration activity in this view." )
+          ),
+          selected ? h("div", { className: "border rounded-md p-3 flex flex-col gap-3 max-h-96 overflow-auto" },
+            h("div", { className: "flex items-center justify-between" }, h("strong", null, selected.title), h("span", { className: "text-xs rounded px-1.5 py-0.5 bg-muted" }, selected.status)),
+            h("div", { className: "text-xs text-muted-foreground" }, `${selected.created_by ? `source: ${selected.created_by} Â· ` : ""}${selected.branch_name || "No branch recorded"}`),
+            h("div", null, h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-1" }, "Agent handoff summary"), h("p", { className: "text-sm whitespace-pre-wrap" }, selected.reasoning_summary || "No summary yet.")),
+            h("div", null, h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-1" }, "Tool and event timeline"), toolEvents.length ? toolEvents.map(function (event) { return h("div", { key: event.id, className: "text-xs border-l-2 pl-2 mb-2" }, h("div", { className: "font-medium" }, event.kind), h("div", { className: "text-muted-foreground break-all" }, event.payload)); }) : h("div", { className: "text-xs text-muted-foreground" }, "No tool events recorded yet.")),
+            h("div", null, h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-1" }, "Run evidence"), (selected.runs || []).map(function (run) { return h("div", { key: run.id, className: "text-xs mb-2" }, `${run.status} · ${run.outcome || "in progress"}`, run.summary ? h("div", { className: "text-muted-foreground" }, run.summary) : null, run.error ? h("div", { className: "text-destructive" }, run.error) : null); }))
+          ) : h("div", { className: "border rounded-md p-4 text-sm text-muted-foreground" }, "Select an agent task to inspect its durable timeline." )
+        ),
+        h("div", { className: "border rounded-md p-3" }, h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-2" }, "Hedgi brain · reusable learnings"), (feed && feed.learning || []).slice(0, 8).map(function (entry, index) { return h("div", { key: index, className: "text-sm border-t first:border-t-0 py-2" }, h("div", null, entry.learning), entry.context ? h("div", { className: "text-xs text-muted-foreground mt-1" }, entry.context) : null); })),
+        h("div", { className: "border rounded-md p-3" },
+          h("div", { className: "text-xs uppercase tracking-wide text-muted-foreground mb-2" }, "Standalone agent sessions"),
+          sessionGroups.length ? sessionGroups.slice(0, 12).map(function (events) {
+            const sessionId = events[0].session_id || "unknown-session";
+            return h("div", { key: sessionId, className: "border-t first:border-t-0 py-2" },
+              h("div", { className: "text-sm font-medium" }, sessionId),
+              events.slice(-8).map(function (event, index) {
+                return h("div", { key: `${sessionId}-${index}`, className: "text-xs border-l-2 pl-2 mt-1" },
+                  h("span", { className: "font-medium" }, event.kind),
+                  h("span", { className: "text-muted-foreground break-all" }, ` · ${JSON.stringify(event.payload || {})}`)
+                );
+              })
+            );
+          }) : h("div", { className: "text-xs text-muted-foreground" }, "No standalone session events recorded.")
+        ),
+      ) : null,
+      message ? h("div", { className: "text-xs text-destructive" }, message) : null
+    ));
   }
 
   // ---------------------------------------------------------------------

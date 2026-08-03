@@ -1232,6 +1232,23 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        # Persist a bounded Kanban activity record for worker observability.
+        # This is fail-open and independent of optional observability plugins.
+        if task_id or session_id:
+            try:
+                from hermes_cli.client_review import record_session_event, record_tool_event
+                event = {
+                    "tool": function_name, "input_summary": function_args,
+                    "tool_call_id": tool_call_id, "session_id": session_id,
+                    "turn_id": turn_id, "started_at": time.time(),
+                }
+                if task_id:
+                    record_tool_event(task_id, "tool_call_started", event)
+                else:
+                    record_session_event(str(session_id), "tool_call_started", event)
+            except Exception:
+                pass
+
         # Check plugin hooks for a block/approve directive (unless caller
         # already checked — e.g. run_agent._invoke_tool passes skip=True to
         # avoid double-firing the hook).
@@ -1374,6 +1391,20 @@ def handle_function_call(
             duration_ms=duration_ms,
             middleware_trace=list(_tool_middleware_trace),
         )
+        if task_id or session_id:
+            try:
+                from hermes_cli.client_review import record_session_event, record_tool_event
+                event = {
+                    "tool": function_name, "outcome": result,
+                    "duration_ms": duration_ms, "tool_call_id": tool_call_id,
+                    "session_id": session_id, "turn_id": turn_id,
+                }
+                if task_id:
+                    record_tool_event(task_id, "tool_call_finished", event)
+                else:
+                    record_session_event(str(session_id), "tool_call_finished", event)
+            except Exception:
+                pass
 
         # Generic tool-result canonicalization seam: plugins receive the
         # final result string (JSON, usually) and may replace it by

@@ -654,7 +654,17 @@ export function getGlobalModelInfo(): Promise<ModelInfoResponse> {
 }
 
 export function getStatus(): Promise<StatusResponse> {
-  return window.hermesDesktop.api<StatusResponse>({
+  // The recovery screen is also rendered when somebody opens the packaged
+  // Desktop bundle in a normal browser. There is no Electron preload bridge in
+  // that context, so do not turn its status poll into an unhandled
+  // `Cannot read properties of undefined (reading 'api')` exception.
+  const api = window.hermesDesktop?.api
+
+  if (!api) {
+    return Promise.reject(new Error('Hermes desktop bridge unavailable'))
+  }
+
+  return api<StatusResponse>({
     ...profileScoped(),
     path: '/api/status'
   })

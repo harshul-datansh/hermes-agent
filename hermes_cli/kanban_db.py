@@ -3828,6 +3828,18 @@ def _append_event(
     )
 
 
+def record_event(conn: sqlite3.Connection, task_id: str, kind: str,
+                 payload: Optional[dict] = None, *, run_id: Optional[int] = None) -> bool:
+    """Public append-only event seam for execution observers."""
+    with write_txn(conn):
+        row = conn.execute("SELECT current_run_id FROM tasks WHERE id = ?", (task_id,)).fetchone()
+        if row is None:
+            return False
+        effective_run_id = run_id if run_id is not None else row["current_run_id"]
+        _append_event(conn, task_id, kind, payload, run_id=effective_run_id)
+    return True
+
+
 def _end_run(
     conn: sqlite3.Connection,
     task_id: str,
