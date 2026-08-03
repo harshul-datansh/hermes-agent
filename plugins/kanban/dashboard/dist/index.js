@@ -1753,6 +1753,8 @@
           feed.controller.delivery ? h("span", { className: "font-medium" }, `delivery: ${feed.controller.delivery.status}`) : null,
           feed.controller.integration ? h("span", { className: "text-muted-foreground" }, `integrated: ${(feed.controller.integration.integrated_task_ids || []).length}`) : null,
           feed.controller.reconciliation ? h("span", { className: "text-muted-foreground" }, `reviewed-only: ${(feed.controller.reconciliation.reviewed_only_task_ids || []).length}`) : null,
+          feed.controller.reconciliation ? h("span", { className: (feed.controller.reconciliation.findings || []).length ? "font-medium" : "text-muted-foreground" }, `findings: ${(feed.controller.reconciliation.findings || []).length}`) : null,
+          feed.controller.reconciliation && (feed.controller.reconciliation.rejected || []).length ? h("span", { className: "text-destructive" }, `needs attention: ${feed.controller.reconciliation.rejected.length}`) : null,
           feed.controller.coverage ? h("span", { className: "text-muted-foreground" }, `coverage: ${feed.controller.coverage.reviewed_pct || 0}% reviewed`) : null,
           feed.controller.cost ? h("span", { className: "text-muted-foreground" }, `cost: $${Number(feed.controller.cost.used_usd || 0).toFixed(2)} / $${Number(feed.controller.cost.max_usd || 0).toFixed(2)}`) : null,
           feed.controller.shadow ? h("span", { className: "text-muted-foreground" }, `shadow: ${feed.controller.shadow.matched || 0}/${feed.controller.shadow.pairs || 0} matched`) : null,
