@@ -1806,7 +1806,14 @@ def send_run_alert(latest: dict[str, Any], config: dict[str, Any] | None = None,
     except urllib.error.HTTPError as exc:
         # Status is actionable (bad chat id vs. forbidden/invalid bot) while
         # the response body and URL may contain sensitive details.
-        return {"sent": False, "reason": f"Telegram API rejected message (HTTP {exc.code})"}
+        detail = ""
+        try:
+            body = json.loads(exc.read().decode("utf-8"))
+            detail = str(body.get("description") or "").strip()
+        except Exception:
+            pass
+        detail = re.sub(r"\b\d{7,}\b", "[chat-id]", detail)
+        return {"sent": False, "reason": f"Telegram API rejected message (HTTP {exc.code})" + (f": {detail}" if detail else "")}
     except Exception:
         # Network exceptions can embed the request URL, including its bot
         # token. Keep that detail out of every persisted artifact.
