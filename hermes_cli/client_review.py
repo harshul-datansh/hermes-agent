@@ -1152,6 +1152,15 @@ def _summary_markdown(result: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _write_summary(result: dict[str, Any]) -> Path:
+    """Refresh the durable summary whenever a later pipeline stage adds evidence."""
+    run_dir = root() / "runs" / str(result.get("run_id") or "")
+    run_dir.mkdir(parents=True, exist_ok=True)
+    summary = run_dir / "summary.md"
+    summary.write_text(_summary_markdown(result), encoding="utf-8")
+    return summary
+
+
 def enqueue_latest() -> dict[str, Any]:
     """Materialize every reviewed work item onto Kanban for the dispatcher.
 
@@ -1578,6 +1587,11 @@ def integrate_reconciled() -> dict[str, Any]:
     if integrated_ids:
         _mark_integrated_findings_patched(latest["run_id"], set(integrated_ids), task_map)
     _write_json(root() / "runs" / latest["run_id"] / "integration.json", latest["integration"])
+    _write_summary(latest)
+    latest["alert"] = send_run_alert(
+        latest, config,
+        event=f"changes integrated: {len(integrated_ids)} patch(es), {len(exceptions)} exception(s)",
+    )
     _write_json(root() / "state.json", latest)
     return latest["integration"]
 
@@ -1633,7 +1647,8 @@ def full_suite_checkpoint() -> dict[str, Any]:
         latest.setdefault("errors", []).append("full-suite checkpoint failed; delivery is blocked")
     latest["full_suite"] = checkpoint
     _write_json(root() / "runs" / latest["run_id"] / "full-suite.json", checkpoint)
-    latest["alert"] = send_run_alert(latest, config)
+    _write_summary(latest)
+    latest["alert"] = send_run_alert(latest, config, event=f"full suite {checkpoint['status']}")
     _write_json(root() / "state.json", latest)
     return checkpoint
 
@@ -2303,6 +2318,7 @@ def reconcile_work_items() -> dict[str, Any]:
             open_findings[finding_id] = {**prior, **_redact_json(finding)}
     _write_json(pipeline_path, pipeline_state)
     latest["reconciliation"] = outcome
+    _write_summary(latest)
     _write_json(root() / "state.json", latest)
     latest.setdefault("lifecycle", {})["review_completed_at"] = time.time()
     outcome["alert"] = send_run_alert(latest, configured_limits, event="review completed")
@@ -2625,7 +2641,16 @@ def doctor() -> dict[str, Any]:
             capacity = {"ok": False, "errors": [_redact(str(exc))]}
         checks.append({"name": "worktree capacity", "ok": bool(capacity.get("ok")),
                        "detail": "; ".join(capacity.get("errors", []) or [f"{capacity.get('free_gb', '?')}GB free"])})
-    telegram_ready = bool((validation.get("config") or {}).get("telegram_chat_id") and _telegram_bot_token())
+    telegram_ready = False
+    try:
+        from hermes_cli.config import get_hermes_home, load_config_readonly
+        from hermes_cli.env_loader import load_hermes_dotenv
+        load_hermes_dotenv(hermes_home=get_hermes_home())
+        home_channel = load_config_readonly().get("TELEGRAM_HOME_CHANNEL")
+        telegram_ready = bool((validation.get("config") or {}).get("telegram_chat_id") and
+                              home_channel and os.environ.get("TELEGRAM_BOT_TOKEN"))
+    except Exception:
+        telegram_ready = False
     checks.append({"name": "telegram alert delivery", "ok": telegram_ready,
                    "optional": True, "detail": "configured" if telegram_ready else "set client chat ID and TELEGRAM_BOT_TOKEN"})
     return {"ready": all(item["ok"] for item in checks if not item.get("optional")), "checks": checks}
