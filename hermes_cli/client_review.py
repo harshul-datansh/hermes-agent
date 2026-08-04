@@ -1471,6 +1471,56 @@ def _mark_integrated_findings_patched(run_id: str, integrated_ids: set[str], tas
     _write_json(pipeline_path, pipeline_state)
 
 
+def _cleanup_finalized_worker_worktrees(repo: Path, latest: dict[str, Any], task_ids: set[str]) -> dict[str, Any]:
+    """Remove Hermes-owned worker trees once their result is integrated or ejected.
+
+    The integration tree is deliberately retained for the full-suite/delivery
+    stages.  Only task workspaces under this run's configured worktree root
+    are eligible, so no operator or client checkout can be removed here.
+    """
+    from hermes_cli import kanban_db
+    run_root = Path(str(settings().get("repository") or repo)).parent
+    configured_root = Path(str((validate(repo, str(settings().get("upstream_remote") or "upstream")).get("config") or {}).get("worktree_root") or repo.parent / "hedgi-worktrees")).expanduser().resolve()
+    run_root = (configured_root / str(latest.get("run_id") or "")).resolve()
+    removed: list[str] = []
+    failed: list[dict[str, str]] = []
+    task_map = latest.get("task_map") if isinstance(latest.get("task_map"), dict) else {}
+    conn = kanban_db.connect()
+    try:
+        for task_id in sorted(task_ids):
+            task = kanban_db.get_task(conn, task_id)
+            workspace = Path(str(getattr(task, "workspace_path", "") or ""))
+            if not workspace:
+                continue
+            try:
+                workspace.resolve().relative_to(run_root)
+            except (OSError, ValueError):
+                failed.append({"task_id": task_id, "reason": "workspace is outside this Hermes run"})
+                continue
+            if not workspace.exists():
+                continue
+            try:
+                _git_run(repo, "worktree", "remove", "--force", str(workspace))
+                removed.append(task_id)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                failed.append({"task_id": task_id, "reason": _redact(str(exc))[:300]})
+                continue
+            item = task_map.get(task_id) if isinstance(task_map.get(task_id), dict) else {}
+            branch = str(item.get("worker_branch") or "")
+            if branch.startswith("hermes/review/") and task_id in set((latest.get("integration") or {}).get("integrated_task_ids") or []):
+                try:
+                    _git_run(repo, "branch", "-D", branch)
+                except (OSError, subprocess.CalledProcessError):
+                    pass
+    finally:
+        conn.close()
+    try:
+        _git_run(repo, "worktree", "prune")
+    except (OSError, subprocess.CalledProcessError) as exc:
+        failed.append({"task_id": "worktree-prune", "reason": _redact(str(exc))[:300]})
+    return {"removed_task_ids": removed, "failures": failed, "at": time.time()}
+
+
 def integrate_reconciled() -> dict[str, Any]:
     """Rebase, gate and merge accepted worker branches into the day branch.
 
@@ -1578,6 +1628,11 @@ def integrate_reconciled() -> dict[str, Any]:
         conn.close()
     latest["integration"] = {"at": time.time(), "outcomes": outcomes, "integrated_task_ids": integrated_ids,
                              "reviewed_only_task_ids": sorted(reviewed_only), "exceptions": exceptions}
+    rejected_ids = {str(entry.get("task_id")) for entry in latest["reconciliation"].get("rejected") or []
+                    if isinstance(entry, dict) and entry.get("task_id")}
+    latest["worktree_cleanup"] = _cleanup_finalized_worker_worktrees(
+        repo, latest, accepted | reviewed_only | rejected_ids,
+    )
     # A checkpoint is safe only when every queued work item sourced from that
     # upstream branch integrated green. Partial success must remain resumable
     # and visible instead of making the next intake skip unintegrated work.
@@ -1594,6 +1649,26 @@ def integrate_reconciled() -> dict[str, Any]:
     )
     _write_json(root() / "state.json", latest)
     return latest["integration"]
+
+
+def _cleanup_integration_worktree(repo: Path, latest: dict[str, Any]) -> dict[str, Any]:
+    """Release the final driver worktree after the daily full-suite finishes."""
+    integration = Path(str((latest.get("day_branch") or {}).get("integration_worktree") or ""))
+    if not integration.exists():
+        return {"removed": False, "reason": "integration worktree already absent"}
+    config = validate(repo, str(settings().get("upstream_remote") or "upstream")).get("config") or {}
+    run_root = (Path(str(config.get("worktree_root") or repo.parent / "hedgi-worktrees")).expanduser().resolve() /
+                str(latest.get("run_id") or "")).resolve()
+    try:
+        integration.resolve().relative_to(run_root)
+    except (OSError, ValueError):
+        return {"removed": False, "reason": "integration path is outside this Hermes run"}
+    try:
+        _git_run(repo, "worktree", "remove", "--force", str(integration))
+        _git_run(repo, "worktree", "prune")
+        return {"removed": True, "path": str(integration)}
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return {"removed": False, "reason": _redact(str(exc))[:300]}
 
 
 def _discover_full_suite_commands(worktree: Path) -> list[list[str]]:
@@ -1647,6 +1722,7 @@ def full_suite_checkpoint() -> dict[str, Any]:
         latest.setdefault("errors", []).append("full-suite checkpoint failed; delivery is blocked")
     latest["full_suite"] = checkpoint
     _write_json(root() / "runs" / latest["run_id"] / "full-suite.json", checkpoint)
+    latest["integration_worktree_cleanup"] = _cleanup_integration_worktree(repo, latest)
     _write_summary(latest)
     latest["alert"] = send_run_alert(latest, config, event=f"full suite {checkpoint['status']}")
     _write_json(root() / "state.json", latest)
