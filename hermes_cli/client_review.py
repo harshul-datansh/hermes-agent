@@ -1084,9 +1084,13 @@ def prepare_day_branch(repo: Path, config: dict[str, Any], topology: dict[str, A
     _git_run(repo, "fetch", "--prune", fork)
     # The local trunk ref is created from its remote tracking branch only. This
     # avoids a checkout of the caller's currently active branch.
-    _git_run(repo, "branch", "--force", f"hermes-controller/{trunk}", f"{fork}/{trunk}")
+    # A controller branch may still be checked out by the prior run's driver
+    # integration tree. Use a per-run local ref so a retry never rewrites a
+    # branch Git has intentionally locked in another worktree.
+    controller_branch = f"hermes-controller/{trunk}/{run_id}"
+    _git_run(repo, "branch", "--force", controller_branch, f"{fork}/{trunk}")
     integration.parent.mkdir(parents=True, exist_ok=True)
-    _git_run(repo, "worktree", "add", str(integration), f"hermes-controller/{trunk}")
+    _git_run(repo, "worktree", "add", str(integration), controller_branch)
     try:
         # A conflict intentionally aborts: we do not resolve client/fork drift.
         _git_run(integration, "merge", "--no-ff", "--no-edit", qa_ref)
