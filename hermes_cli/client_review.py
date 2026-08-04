@@ -1767,6 +1767,11 @@ def integrate_reconciled() -> dict[str, Any]:
     if integrated_ids:
         _mark_integrated_findings_patched(latest["run_id"], set(integrated_ids), task_map)
     _write_json(root() / "runs" / latest["run_id"] / "integration.json", latest["integration"])
+    # The selected integration gates are complete at this point.  Do not hold
+    # a driver worktree just because a later, optional full-suite checkpoint
+    # has not yet been requested; that checkpoint can recreate a detached tree
+    # from the pushed day branch.
+    latest["integration_worktree_cleanup"] = _cleanup_integration_worktree(repo, latest)
     _write_summary(latest)
     latest["alert"] = send_run_alert(
         latest, config,
@@ -1812,44 +1817,75 @@ def _discover_full_suite_commands(worktree: Path) -> list[list[str]]:
     return commands
 
 
+def _create_full_suite_worktree(repo: Path, latest: dict[str, Any], config: dict[str, Any]) -> Path:
+    """Create a short-lived detached tree for a post-integration full suite."""
+    day_branch = str((latest.get("day_branch") or {}).get("day_branch") or "").strip()
+    run_id = str(latest.get("run_id") or "").strip()
+    if not day_branch or not run_id:
+        raise ValueError("day branch metadata is unavailable for the full-suite checkpoint")
+    run_root = Path(str(config.get("worktree_root") or repo.parent / "hedgi-worktrees")).expanduser().resolve() / run_id
+    worktree = run_root / "full-suite"
+    if worktree.exists():
+        raise ValueError("full-suite worktree already exists; recover or remove it before retrying")
+    _git_run(repo, "worktree", "add", "--detach", str(worktree), day_branch)
+    return worktree
+
+
+def _remove_full_suite_worktree(repo: Path, worktree: Path) -> dict[str, Any]:
+    """Best-effort cleanup for the temporary full-suite checkout."""
+    if not worktree.exists():
+        return {"removed": False, "reason": "full-suite worktree already absent"}
+    try:
+        _git_run(repo, "worktree", "remove", "--force", str(worktree))
+        _git_run(repo, "worktree", "prune")
+        return {"removed": True, "path": str(worktree)}
+    except (OSError, subprocess.CalledProcessError) as exc:
+        return {"removed": False, "reason": _redact(str(exc))[:300]}
+
+
 def full_suite_checkpoint() -> dict[str, Any]:
     """Run and persist the final full-suite checkpoint on the integrated tree."""
     latest = status().get("state")
     if not latest or not isinstance(latest.get("integration"), dict):
         raise ValueError("integrate reconciled work before running the full-suite checkpoint")
-    integration = Path(str((latest.get("day_branch") or {}).get("integration_worktree") or ""))
-    if not integration.is_dir():
-        raise ValueError("integration worktree is unavailable")
     controller = settings()
     repo = Path(str(controller.get("repository") or ""))
     validation = validate(repo, str(controller.get("upstream_remote") or "upstream"))
     if not validation.get("ok"):
         raise ValueError("cannot run full suite until pipeline prerequisites pass")
     config = validation["config"]
+    integration = Path(str((latest.get("day_branch") or {}).get("integration_worktree") or ""))
+    temporary = False
+    if not integration.is_dir():
+        integration = _create_full_suite_worktree(repo, latest, config)
+        temporary = True
     commands: list[list[str]] = []
-    from hermes_cli import kanban_db
-    conn = kanban_db.connect()
     try:
-        for task_id in latest.get("kanban_task_ids", []):
-            task = kanban_db.get_task(conn, task_id)
-            report = _task_report(task, conn) if task else {}
-            commands.extend(_safe_test_commands({"integration_tests": report.get("full_suite_tests")}))
+        from hermes_cli import kanban_db
+        conn = kanban_db.connect()
+        try:
+            for task_id in latest.get("kanban_task_ids", []):
+                task = kanban_db.get_task(conn, task_id)
+                report = _task_report(task, conn) if task else {}
+                commands.extend(_safe_test_commands({"integration_tests": report.get("full_suite_tests")}))
+        finally:
+            conn.close()
+        if not commands:
+            commands = _discover_full_suite_commands(integration)
+        # De-duplicate while retaining deterministic order.
+        commands = list(dict.fromkeys(tuple(command) for command in commands))
+        approved = [list(command) for command in commands]
+        green, outcomes = _run_integration_tests(integration, approved, int(config["full_suite_timeout_minutes"]), 0,
+                                                  int(config["worktree_port_base"]))
     finally:
-        conn.close()
-    if not commands:
-        commands = _discover_full_suite_commands(integration)
-    # De-duplicate while retaining deterministic order.
-    commands = list(dict.fromkeys(tuple(command) for command in commands))
-    approved = [list(command) for command in commands]
-    green, outcomes = _run_integration_tests(integration, approved, int(config["full_suite_timeout_minutes"]), 0,
-                                              int(config["worktree_port_base"]))
+        cleanup = _remove_full_suite_worktree(repo, integration) if temporary else _cleanup_integration_worktree(repo, latest)
     checkpoint = {"status": "passed" if green else "failed", "commands": approved,
                   "outcomes": outcomes, "at": time.time(), "timeout_minutes": config["full_suite_timeout_minutes"]}
     if not green:
         latest.setdefault("errors", []).append("full-suite checkpoint failed; delivery is blocked")
     latest["full_suite"] = checkpoint
     _write_json(root() / "runs" / latest["run_id"] / "full-suite.json", checkpoint)
-    latest["integration_worktree_cleanup"] = _cleanup_integration_worktree(repo, latest)
+    latest["integration_worktree_cleanup"] = cleanup
     _write_summary(latest)
     latest["alert"] = send_run_alert(latest, config, event=f"full suite {checkpoint['status']}")
     _write_json(root() / "state.json", latest)

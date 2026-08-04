@@ -250,6 +250,20 @@ def test_completed_driver_conflict_cleanup_requires_explicit_resolution(tmp_path
     assert any(call[1:4] == ("worktree", "remove", "--force") for call in calls)
 
 
+def test_full_suite_can_recreate_a_temporary_tree_after_integration_cleanup(tmp_path, monkeypatch):
+    calls = []
+    monkeypatch.setattr(client_review, "_git_run", lambda *_args: calls.append(_args) or "")
+
+    worktree = client_review._create_full_suite_worktree(
+        tmp_path,
+        {"run_id": "run-1", "day_branch": {"day_branch": "hermes/acme/2026-08-04"}},
+        {"worktree_root": str(tmp_path / "worktrees")},
+    )
+
+    assert worktree == tmp_path / "worktrees" / "run-1" / "full-suite"
+    assert calls == [(tmp_path, "worktree", "add", "--detach", str(worktree), "hermes/acme/2026-08-04")]
+
+
 def test_deprecated_features_are_not_matched(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "src/xtax/old.py")
     registry = {"features": [{"id": "xtax", "lifecycle": "deprecated", "paths": ["src/xtax/**"]}]}
