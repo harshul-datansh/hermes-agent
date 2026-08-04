@@ -1647,6 +1647,7 @@
         state.reconciliation ? h("span", { className: (state.reconciliation.findings || []).length ? "font-medium" : "text-muted-foreground" }, `findings: ${(state.reconciliation.findings || []).length}`) : null,
         state.reconciliation && (state.reconciliation.rejected || []).length ? h("span", { className: "text-destructive" }, `needs decision: ${state.reconciliation.rejected.length}`) : null,
         state.worktree_cleanup ? h("span", { className: "text-muted-foreground" }, `worktrees cleared: ${(state.worktree_cleanup.removed_task_ids || []).length}`) : null,
+        state.driver_conflict_cleanup ? h("span", { className: "text-muted-foreground" }, `driver conflict trees cleared: ${(state.driver_conflict_cleanup.removed_task_ids || []).length}`) : null,
         state.errors && state.errors.length ? h("span", { className: "text-destructive" }, state.errors[0]) : null
       ) : null,
       open ? h("div", { className: "flex flex-col gap-2 text-sm" },
@@ -1748,7 +1749,7 @@
           return h("div", { key: soul.role, className: `rounded border px-2 py-1 text-xs ${soul.available ? "" : "border-destructive text-destructive"}` },
             h("span", { className: "font-medium" }, soul.role.replace(/_/g, " ")),
             h("span", { className: "text-muted-foreground" }, ` · ${soul.profile || soul.error || "unconfigured"}`),
-            soul.is_driver ? h("span", { className: "ml-1 rounded bg-muted px-1" }, "driver") : null,
+            soul.is_driver ? h("span", { className: "ml-1 rounded bg-muted px-1" }, " driver") : null,
             soul.active_tasks ? h("span", { className: "ml-1" }, ` · ${soul.active_tasks} active`) : null
           );
         })) : h("div", { className: "text-xs text-muted-foreground" }, "Loading soul assignments…")
