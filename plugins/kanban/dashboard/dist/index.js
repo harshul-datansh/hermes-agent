@@ -1575,7 +1575,7 @@
     const [doctorData, setDoctorData] = useState(null);
     const load = useCallback(function () {
       return Promise.all([SDK.fetchJSON(`${API}/client-review`), SDK.fetchJSON(`${API}/client-review/schedules`), SDK.fetchJSON(`${API}/client-review/doctor`)]).then(function (values) {
-        const value = values[0]; const schedules = values[1]; const job = (schedules.jobs || [])[0] || null;
+        const value = values[0]; const schedules = values[1]; const job = (schedules.jobs || []).find(function (candidate) { return candidate.name === "client-review: guarded intake"; }) || null;
         setDoctorData(values[2] || null);
         setData(value); setRepository((value.settings && value.settings.repository) || "");
         setEnabled(!!(value.settings && value.settings.enabled));
@@ -1677,7 +1677,7 @@
           )
         ),
         h("div", { className: "border rounded-md p-2 flex flex-col gap-2" },
-          h("div", null, h("strong", { className: "text-sm" }, "Scheduled intake"), h("div", { className: "text-xs text-muted-foreground" }, "Runs the guarded intake script without an AI call; workers are only created when work is queued.")),
+          h("div", null, h("strong", { className: "text-sm" }, "Scheduled intake"), h("div", { className: "text-xs text-muted-foreground" }, "Runs guarded intake without an AI call; a five-minute no-agent watcher automatically resumes it after a driver resolves fork drift.")),
           h("div", { className: "flex gap-2" }, h(Input, { value: cronSchedule, placeholder: "0 9 * * 1-5", onChange: function (e) { setCronSchedule(e.target.value); } }), h(Button, { variant: "secondary", onClick: saveSchedule, disabled: !repository }, cronJob ? "Update cron" : "Create cron")),
           h("label", { className: "flex items-center gap-2 text-xs" }, h("input", { type: "checkbox", checked: cronEnabled, onChange: function (e) { setCronEnabled(e.target.checked); } }), "Enabled"),
           cronJob && cronJob.next_run_at ? h("div", { className: "text-xs text-muted-foreground" }, `Next run: ${cronJob.next_run_at}`) : null

@@ -55,6 +55,9 @@ _DEFAULT_SOUL_PROFILES = {
 }
 _CRON_JOB_NAME = "client-review: guarded intake"
 _CRON_SCRIPT = "client_review_runner.py"
+_CONFLICT_RESUME_JOB_NAME = "client-review: conflict resume watcher"
+_CONFLICT_RESUME_SCRIPT = "client_review_conflict_resume.py"
+_CONFLICT_RESUME_SCHEDULE = "*/5 * * * *"
 
 
 def root() -> Path:
@@ -1051,7 +1054,11 @@ def _queue_driver_conflict_resolution(repo: Path, integration: Path, config: dic
         "preserving both compatible behaviors. Do not change .hermes/config.json, features.json, secrets, lockfiles, "
         "deployment files, or upstream branches. Do not discard either side merely to finish the merge. "
         "Inspect the base/ours/theirs versions, make the minimal semantic resolution, run git diff --check, and run the "
-        "narrowest relevant test only when the conflict changes executable behavior. Complete the merge commit, then push "
+        "narrowest relevant test only when the conflict changes executable behavior. If that focused build/test exposes a "
+        "minor, directly reproducible compile blocker (for example a missing import, stale symbol, or trivial type mismatch), "
+        "fix it in the same isolated workspace with a minimal regression check and include it in the merge summary. Do not "
+        "expand into unrelated refactors, broad suite repair, configuration changes, or ambiguous product behavior: record those "
+        "as findings instead. Use the repository Maven Wrapper, never global Maven. Complete the merge commit, then push "
         f"only to the permitted fork trunk `{trunk}`. Return JSON through kanban_complete with conflict_resolved=true, "
         "conflict_paths, tests, handoff_summary, tool_calls, confidence, escalate, escalation_reason, and specific_doubt. "
         "If intended behavior cannot be determined, set requires_user_requirement=true with a decision-ready question and "
@@ -1422,6 +1429,18 @@ def _safe_handoff_summary(conn: Any, task_id: str, result_payload: dict[str, Any
         summary = kanban_db.latest_summary(conn, task_id)
     else:
         summary = None
+    if isinstance(summary, str):
+        candidate = summary.strip().removeprefix("```json").removesuffix("```").strip()
+        try:
+            decoded = json.loads(candidate)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            for key in ("handoff_summary", "summary", "status_summary"):
+                value = decoded.get(key)
+                if isinstance(value, str) and value.strip():
+                    summary = value
+                    break
     if not summary:
         for key in ("handoff_summary", "summary", "status_summary"):
             value = result_payload.get(key)
@@ -2105,9 +2124,7 @@ def _telegram_message(latest: dict[str, Any], config: dict[str, Any] | None = No
         lines.append("Health: " + "; ".join(_redact(str(note))[:240] for note in latest["notes"][:3]))
     if (latest.get("delivery") or {}).get("day_pr", {}).get("url"):
         lines.append("PR: " + str(latest["delivery"]["day_pr"]["url"]))
-    summary = root() / "runs" / str(latest.get("run_id") or "") / "summary.md"
-    if summary.exists():
-        lines.append("Summary: " + str(summary))
+    lines.append("Full evidence: Kanban → Client change review → Orchestration activity")
     return _redact("\n".join(lines))[:3900]
 
 
@@ -3004,20 +3021,70 @@ def doctor() -> dict[str, Any]:
     return {"ready": all(item["ok"] for item in checks if not item.get("optional")), "checks": checks}
 
 
+def _resolved_driver_conflict_task_ids() -> list[str]:
+    """Return only terminal driver-conflict tasks that explicitly resolved."""
+    from hermes_cli import kanban_db
+    task_ids: list[str] = []
+    conn = kanban_db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE created_by = ? AND title LIKE ?",
+            ("client-review", "[client-review driver conflict] %"),
+        ).fetchall()
+        for row in rows:
+            task = kanban_db.Task.from_row(row)
+            if task.status not in {"done", "archived"}:
+                continue
+            try:
+                result = json.loads(task.result or "{}")
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if isinstance(result, dict) and result.get("conflict_resolved") is True:
+                task_ids.append(task.id)
+    finally:
+        conn.close()
+    return sorted(set(task_ids))
+
+
+def resume_completed_driver_conflicts() -> dict[str, Any]:
+    """Resume guarded intake once after a driver has pushed a conflict fix.
+
+    This is intentionally no-agent work: it observes only completed driver
+    tasks, records the resume attempt durably, and invokes normal guarded
+    intake exactly once per resolution. The five-minute cron watcher calls it
+    so recovery does not depend on a worker remembering an extra CLI command.
+    """
+    resolved = _resolved_driver_conflict_task_ids()
+    state_path = root() / "driver-conflict-resume.json"
+    history = _read_json(state_path) if state_path.exists() else {"resumed": {}}
+    resumed = history.setdefault("resumed", {})
+    pending = [task_id for task_id in resolved if task_id not in resumed]
+    if not pending:
+        return {"resumed": False, "reason": "no newly resolved driver conflicts", "task_ids": resolved}
+    result = run_once()
+    for task_id in pending:
+        resumed[task_id] = {"at": time.time(), "run_id": result.get("run_id"), "status": result.get("status")}
+    _write_json(state_path, history)
+    return {"resumed": True, "task_ids": pending, "run_id": result.get("run_id"), "status": result.get("status")}
+
+
 def scheduled_runs() -> list[dict[str, Any]]:
-    """List no-agent scheduled intake jobs owned by this controller."""
+    """List no-agent scheduled controller jobs, including conflict resumption."""
     from cron.jobs import load_jobs
     keys = ("id", "name", "schedule", "schedule_display", "enabled", "state", "next_run_at", "last_run_at", "last_error")
     return [{key: job.get(key) for key in keys} for job in load_jobs()
-            if job.get("name") == _CRON_JOB_NAME and job.get("script") == _CRON_SCRIPT]
+            if (job.get("name"), job.get("script")) in {
+                (_CRON_JOB_NAME, _CRON_SCRIPT),
+                (_CONFLICT_RESUME_JOB_NAME, _CONFLICT_RESUME_SCRIPT),
+            }]
 
 
-def _install_cron_runner() -> Path:
+def _install_cron_runner(script: str = _CRON_SCRIPT) -> Path:
     """Stage the versioned runner into Hermes' constrained cron script home."""
-    source = Path(__file__).resolve().parents[1] / "scripts" / _CRON_SCRIPT
+    source = Path(__file__).resolve().parents[1] / "scripts" / script
     if not source.is_file():
         raise ValueError(f"missing bundled cron runner: {source}")
-    target = get_hermes_home() / "scripts" / _CRON_SCRIPT
+    target = get_hermes_home() / "scripts" / script
     target.parent.mkdir(parents=True, exist_ok=True)
     # Copy on every schedule update so a dashboard save also refreshes a
     # previously installed runner after Hermes itself is upgraded.
@@ -3031,10 +3098,13 @@ def save_scheduled_run(schedule: str, enabled: bool = True) -> dict[str, Any]:
     expression = schedule.strip()
     if not expression:
         raise ValueError("cron schedule is required")
-    _install_cron_runner()
+    _install_cron_runner(_CRON_SCRIPT)
+    _install_cron_runner(_CONFLICT_RESUME_SCRIPT)
     existing = scheduled_runs()
-    if existing:
-        job = update_job(existing[0]["id"], {"schedule": expression})
+    intake_existing = next((job for job in existing if job.get("name") == _CRON_JOB_NAME), None)
+    watcher_existing = next((job for job in existing if job.get("name") == _CONFLICT_RESUME_JOB_NAME), None)
+    if intake_existing:
+        job = update_job(intake_existing["id"], {"schedule": expression})
         if not job:
             raise ValueError("scheduled client-review job could not be updated")
         job = (resume_job(job["id"]) if enabled else pause_job(job["id"], reason="disabled from client-review dashboard")) or job
@@ -3046,7 +3116,20 @@ def save_scheduled_run(schedule: str, enabled: bool = True) -> dict[str, Any]:
                          script=_CRON_SCRIPT, no_agent=True, workdir=repo, deliver="local")
         if not enabled:
             job = pause_job(job["id"], reason="disabled from client-review dashboard") or job
-    return {"job": {key: job.get(key) for key in ("id", "name", "schedule", "schedule_display", "enabled", "state", "next_run_at")}}
+    repo = str(settings().get("repository") or "").strip()
+    if watcher_existing:
+        watcher = update_job(watcher_existing["id"], {"schedule": _CONFLICT_RESUME_SCHEDULE})
+        if not watcher:
+            raise ValueError("conflict-resume watcher could not be updated")
+        watcher = (resume_job(watcher["id"]) if enabled else pause_job(watcher["id"], reason="disabled with client-review intake")) or watcher
+    else:
+        watcher = create_job(name=_CONFLICT_RESUME_JOB_NAME, schedule=_CONFLICT_RESUME_SCHEDULE,
+                             prompt="Resume a guarded intake only after a completed driver conflict resolution.",
+                             script=_CONFLICT_RESUME_SCRIPT, no_agent=True, workdir=repo, deliver="local")
+        if not enabled:
+            watcher = pause_job(watcher["id"], reason="disabled with client-review intake") or watcher
+    job_keys = ("id", "name", "schedule", "schedule_display", "enabled", "state", "next_run_at")
+    return {"job": {key: job.get(key) for key in job_keys}, "watcher": {key: watcher.get(key) for key in job_keys}}
 
 
 def run_once() -> dict[str, Any]:

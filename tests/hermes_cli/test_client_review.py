@@ -72,6 +72,7 @@ def test_run_records_read_only_intake_summary(tmp_path, monkeypatch):
         "day_branch": "hermes/acme/2026-08-04", "integration_worktree": str(tmp_path / "missing-integration"),
         "trunk": "acme", "fork_remote": "fork", "upstream_remote": "upstream",
     })
+    monkeypatch.setattr(client_review, "send_run_alert", lambda *_args, **_kwargs: {"sent": False, "reason": "test"})
     result = client_review.run_once()
     assert result["status"] == "reviewed"
     assert client_review.status()["state"]["run_id"] == result["run_id"]
@@ -326,6 +327,31 @@ def test_structured_redaction_preserves_json_shape():
 def test_handoff_summary_never_falls_back_to_raw_result_blob():
     assert client_review._safe_handoff_summary(None, "task-1", {"findings": [{"secret": "super-secret"}]}) == "No handoff summary recorded."
     assert client_review._safe_handoff_summary(None, "task-1", {"handoff_summary": "token=super-secret; fixed test"}) == "[REDACTED:token] fixed test"
+
+
+def test_handoff_summary_extracts_human_text_from_stored_json(monkeypatch):
+    from hermes_cli import kanban_db
+    monkeypatch.setattr(kanban_db, "latest_summary", lambda *_args: '{"handoff_summary":"Resolved the merge and pushed the fork trunk."}')
+    assert client_review._safe_handoff_summary(object(), "task-1", {}) == "Resolved the merge and pushed the fork trunk."
+
+
+def test_telegram_message_is_mobile_safe_and_never_uses_a_local_summary_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_review, "get_hermes_home", lambda: tmp_path / "home")
+    message = client_review._telegram_message({"run_id": "run-1", "status": "reviewed", "coverage": {}, "branches": []}, {"client_name": "acme", "timezone": "UTC"})
+    assert "summary.md" not in message.lower()
+    assert "Full evidence: Kanban" in message
+
+
+def test_conflict_resume_runs_once_per_completed_driver_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_review, "get_hermes_home", lambda: tmp_path / "home")
+    monkeypatch.setattr(client_review, "_resolved_driver_conflict_task_ids", lambda: ["driver-1"])
+    calls = []
+    monkeypatch.setattr(client_review, "run_once", lambda: calls.append("run") or {"run_id": "run-2", "status": "reviewed"})
+    first = client_review.resume_completed_driver_conflicts()
+    second = client_review.resume_completed_driver_conflicts()
+    assert first["resumed"] is True
+    assert second["resumed"] is False
+    assert calls == ["run"]
 
 
 def test_session_events_are_append_only_and_redacted(tmp_path, monkeypatch):
