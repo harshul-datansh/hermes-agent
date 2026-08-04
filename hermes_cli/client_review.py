@@ -93,7 +93,9 @@ def _pid_is_running(pid: int) -> bool:
         return False
     try:
         os.kill(pid, 0)
-    except ProcessLookupError:
+    except (ProcessLookupError, OSError):
+        # Windows raises a generic OSError/WinError 87 for an out-of-range
+        # PID probe. It is not a live controller process.
         return False
     except PermissionError:
         return True
@@ -930,7 +932,7 @@ def day_branch_name(config: dict[str, Any], suffix: int | None = None) -> str:
 
 
 def worktree_preflight(repo: Path, config: dict[str, Any], create_root: bool = True) -> dict[str, Any]:
-    root_path = Path(str(config["worktree_root"])).expanduser()
+    root_path = Path(str(config.get("worktree_root") or repo.parent / "hedgi-worktrees")).expanduser()
     if create_root:
         root_path.mkdir(parents=True, exist_ok=True)
     usage_path = root_path if root_path.exists() else root_path.parent
@@ -938,9 +940,9 @@ def worktree_preflight(repo: Path, config: dict[str, Any], create_root: bool = T
     listed = _git(repo, "worktree", "list", "--porcelain").splitlines()
     active = sum(1 for line in listed if line.startswith("worktree "))
     errors: list[str] = []
-    if free_gb < float(config["min_free_disk_gb"]):
+    if free_gb < float(config.get("min_free_disk_gb") or 20):
         errors.append(f"free disk {free_gb:.1f}GB is below configured minimum")
-    if active >= int(config["max_worktrees"]):
+    if active >= int(config.get("max_worktrees") or 8):
         errors.append(f"active worktrees {active} reached configured maximum")
     return {"ok": not errors, "errors": errors, "root": str(root_path), "free_gb": round(free_gb, 1), "active": active}
 
@@ -2763,6 +2765,26 @@ def validate(repo: Path, upstream_remote: str = "upstream") -> dict[str, Any]:
         config = _read_json(config_path)
     except Exception as exc:
         return {"ok": False, "errors": [f"invalid .hermes/config.json: {exc}"], "notes": notes}
+    # Only the identity, timezone, branch and Telegram fields are required
+    # client-owned inputs. Infrastructure limits have stable controller
+    # defaults so an older, otherwise valid config remains safe to inspect;
+    # these values are never written back to the client file.
+    config = {
+        "qa_branch_override": None,
+        "max_sol_calls": 3,
+        "max_run_cost_usd": 40.0,
+        "review_budget_hunks": 600,
+        "min_coverage_alert_pct": 15,
+        "max_parallel_review_agents": 12,
+        "worktree_root": str(root() / "worktrees"),
+        "max_worktrees": 8,
+        "min_free_disk_gb": 40,
+        "worktree_port_base": 21000,
+        "selected_tests_timeout_minutes": 25,
+        "full_suite_timeout_minutes": 90,
+        "run_timeout_minutes": 240,
+        **config,
+    }
     for key in ("client_name", "timezone", "telegram_chat_id", "prod_branch"):
         if not config.get(key): errors.append(f"missing config key: {key}")
     try: ZoneInfo(str(config.get("timezone")))

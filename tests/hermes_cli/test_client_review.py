@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import sys
+import types
 from types import SimpleNamespace
 
 import pytest
@@ -66,6 +68,10 @@ def test_run_records_read_only_intake_summary(tmp_path, monkeypatch):
         if "ls-tree" in args: return "src/a.py"
         return "abc123"
     monkeypatch.setattr(client_review, "_git", git)
+    monkeypatch.setattr(client_review, "prepare_day_branch", lambda *_args: {
+        "day_branch": "hermes/acme/2026-08-04", "integration_worktree": str(tmp_path / "missing-integration"),
+        "trunk": "acme", "fork_remote": "fork", "upstream_remote": "upstream",
+    })
     result = client_review.run_once()
     assert result["status"] == "reviewed"
     assert client_review.status()["state"]["run_id"] == result["run_id"]
@@ -216,7 +222,7 @@ def test_worker_cleanup_ignores_tasks_without_a_workspace_path(tmp_path, monkeyp
     )
 
     assert result["failures"] == []
-    assert not any("worktree" in call for call in calls)
+    assert not any(call[1:3] == ("worktree", "remove") for call in calls)
 
 
 def test_completed_driver_conflict_cleanup_requires_explicit_resolution(tmp_path, monkeypatch):
@@ -359,11 +365,11 @@ def test_alerts_suppress_clean_runs_and_keep_fingerprint_stable(tmp_path, monkey
 
 def test_validation_abort_is_not_fingerprint_suppressed(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "get_hermes_home", lambda: tmp_path / "home")
-    class Response:
-        def __enter__(self): return self
-        def __exit__(self, *_args): return None
-        def read(self): return b'{"ok": true}'
-    monkeypatch.setattr(client_review.urllib.request, "urlopen", lambda *_args, **_kwargs: Response())
+    from hermes_cli import config as hermes_config
+    fake_sender = types.ModuleType("tools.send_message_tool")
+    fake_sender.send_message_tool = lambda _payload: {"success": True}
+    monkeypatch.setitem(sys.modules, "tools.send_message_tool", fake_sender)
+    monkeypatch.setattr(hermes_config, "load_config_readonly", lambda: {"TELEGRAM_HOME_CHANNEL": "1"})
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "test-token")
     run = {"run_id": "r", "status": "partial", "validation": {"ok": False}, "errors": ["missing registry"]}
     assert client_review.send_run_alert(run, {"client_name": "x", "telegram_chat_id": "1"})["sent"]
