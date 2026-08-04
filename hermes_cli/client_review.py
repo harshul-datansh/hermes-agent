@@ -1259,7 +1259,9 @@ def enqueue_latest() -> dict[str, Any]:
                     "confidence, escalate, escalation_reason, specific_doubt, tool_calls, integration_tests, and sol_verified. "
                     "Also include requires_user_requirement (boolean) and user_requirement_question (string or null). "
                     "integration_tests must be a list of objects with a structured argv command (no shell string), "
-                    "using pytest/python/npm/pnpm/yarn/gradle/mvn only. Set sol_verified true only for a completed "
+                    "using pytest/python/npm/pnpm/yarn/gradle or the repository Maven Wrapper only. For Java use "
+                    "./backend/mvnw on Unix or backend\\mvnw.cmd on Windows; never rely on a global mvn executable. "
+                    "Set sol_verified true only for a completed "
                     "Sol verification of a production logic patch. Every test evidence object must include the exact "
                     "base_sha supplied in the work item. Include each "
                     "tool name, safe redacted input summary, outcome, and timestamp in tool_calls. Do not "
@@ -1426,7 +1428,8 @@ def _safe_test_commands(report: dict[str, Any]) -> list[list[str]]:
     raw = report.get("integration_tests") or report.get("test_commands") or []
     if not isinstance(raw, list):
         return []
-    allowed = {"python", "python3", "pytest", "npm", "pnpm", "yarn", "gradle", "./gradlew", "mvn", "./mvnw"}
+    allowed = {"python", "python3", "pytest", "npm", "pnpm", "yarn", "gradle", "./gradlew", "./mvnw",
+               "./backend/mvnw", "backend/mvnw", "./backend/mvnw.cmd", "backend\\mvnw.cmd"}
     forbidden = {"-c", "-C", "--eval", "--exec", "--command", "-e"}
     commands: list[list[str]] = []
     for entry in raw:
@@ -1459,6 +1462,12 @@ def _run_integration_tests(worktree: Path, commands: list[list[str]], timeout_mi
     env.update({"HERMES_WORKTREE_SLOT": str(slot), "HERMES_WORKTREE_PORT": str(port_base + slot * 100),
                 "HERMES_WORKTREE_TMP": str(worktree / ".hermes-tmp")})
     for command in commands:
+        executable = command[0]
+        if os.name == "nt":
+            if executable in {"./mvnw"} and (worktree / "mvnw.cmd").is_file():
+                command = ["mvnw.cmd", *command[1:]]
+            elif executable in {"./backend/mvnw", "backend/mvnw"} and (worktree / "backend" / "mvnw.cmd").is_file():
+                command = ["backend\\mvnw.cmd", *command[1:]]
         try:
             completed = subprocess.run(command, cwd=worktree, env=env, text=True, encoding="utf-8",
                                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=timeout_minutes * 60,
@@ -1728,7 +1737,9 @@ def _discover_full_suite_commands(worktree: Path) -> list[list[str]]:
     if (worktree / "package.json").exists():
         commands.append(["npm", "test"])
     if (worktree / "pom.xml").exists():
-        commands.append(["mvn", "test"])
+        commands.append(["mvnw.cmd" if os.name == "nt" and (worktree / "mvnw.cmd").exists() else "./mvnw", "test"])
+    elif (worktree / "backend" / "pom.xml").exists():
+        commands.append(["backend\\mvnw.cmd" if os.name == "nt" else "./backend/mvnw", "test"])
     if (worktree / "gradlew").exists() or (worktree / "gradlew.bat").exists():
         commands.append(["./gradlew", "test"])
     return commands
