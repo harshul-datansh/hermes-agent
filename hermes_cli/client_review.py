@@ -1062,8 +1062,8 @@ def _queue_driver_conflict_resolution(repo: Path, integration: Path, config: dic
         f"only to the permitted fork trunk `{trunk}`. Return JSON through kanban_complete with conflict_resolved=true, "
         "conflict_paths, tests, handoff_summary, tool_calls, confidence, escalate, escalation_reason, and specific_doubt. "
         "If intended behavior cannot be determined, set requires_user_requirement=true with a decision-ready question and "
-        "leave the merge unresolved. After a successful push, run `hermes client-review run` once from this workspace "
-        "to resume guarded intake; do not enqueue or start general review workers yourself.\n\n"
+        "leave the merge unresolved. After a successful push, stop: the controller-owned conflict watcher resumes "
+        "guarded intake automatically; do not enqueue or start general review workers yourself.\n\n"
         f"QA source: {qa_ref}\nFork trunk: {trunk}\nConflicting paths:\n{conflict_list}"
     )
     conn = kanban_db.connect()
