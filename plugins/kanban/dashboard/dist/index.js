@@ -1641,7 +1641,14 @@
         h("div", null, h("strong", null, "Client change review"), h("div", { className: "text-xs text-muted-foreground" }, "Guarded QA/production intake, evidence and state.")),
         h("button", { type: "button", className: "underline text-sm", onClick: function () { setOpen(!open); } }, open ? "Hide" : "Manage")
       ),
-      state ? h("div", { className: "text-xs" }, `Last run: ${state.status || "unknown"}${state.changed_files != null ? ` — ${state.changed_files} files / ${state.changed_lines} lines` : ""}`) : null,
+      state ? h("div", { className: "text-xs flex flex-wrap gap-x-3 gap-y-1" },
+        h("span", null, `Last run: ${state.status || "unknown"}${state.changed_files != null ? ` — ${state.changed_files} files / ${state.changed_lines} lines` : ""}`),
+        state.coverage ? h("span", { className: "text-muted-foreground" }, `coverage: ${state.coverage.reviewed_hunks || 0}/${state.coverage.candidate_hunks || 0} (${state.coverage.reviewed_pct || 0}%)`) : null,
+        state.reconciliation ? h("span", { className: (state.reconciliation.findings || []).length ? "font-medium" : "text-muted-foreground" }, `findings: ${(state.reconciliation.findings || []).length}`) : null,
+        state.reconciliation && (state.reconciliation.rejected || []).length ? h("span", { className: "text-destructive" }, `needs decision: ${state.reconciliation.rejected.length}`) : null,
+        state.worktree_cleanup ? h("span", { className: "text-muted-foreground" }, `worktrees cleared: ${(state.worktree_cleanup.removed_task_ids || []).length}`) : null,
+        state.errors && state.errors.length ? h("span", { className: "text-destructive" }, state.errors[0]) : null
+      ) : null,
       open ? h("div", { className: "flex flex-col gap-2 text-sm" },
         h(Label, null, "Client repository checkout"),
         h(Input, { value: repository, placeholder: "C:\\path\\to\\client-fork", onChange: function (e) { setRepository(e.target.value); } }),

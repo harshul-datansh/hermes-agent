@@ -188,6 +188,15 @@ def test_integration_commands_are_structured_and_never_allow_python_eval():
     assert commands == [["python", "-m", "pytest", "tests/unit"]]
 
 
+def test_integration_commands_accept_repository_maven_wrappers_only():
+    commands = client_review._safe_test_commands({"integration_tests": [
+        {"command": ["backend\\mvnw.cmd", "-DskipTests", "compile"]},
+        {"command": ["./backend/mvnw", "test"]},
+        {"command": ["mvn", "test"]},
+    ]})
+    assert commands == [["backend\\mvnw.cmd", "-DskipTests", "compile"], ["./backend/mvnw", "test"]]
+
+
 def test_deprecated_features_are_not_matched(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "src/xtax/old.py")
     registry = {"features": [{"id": "xtax", "lifecycle": "deprecated", "paths": ["src/xtax/**"]}]}
