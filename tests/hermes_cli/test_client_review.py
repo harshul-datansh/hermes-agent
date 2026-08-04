@@ -270,6 +270,25 @@ def test_full_suite_can_recreate_a_temporary_tree_after_integration_cleanup(tmp_
     assert calls == [(tmp_path, "worktree", "add", "--detach", str(worktree), "hermes/acme/2026-08-04")]
 
 
+def test_delivery_upserts_a_fork_pr_through_the_git_credential_api_path(tmp_path, monkeypatch):
+    monkeypatch.setattr(client_review, "_github_repo_and_token", lambda *_args: ("fork-owner", "client", "never-expose"))
+    calls = []
+
+    def api(_repo, _remote, method, path, payload=None):
+        calls.append((method, path, payload))
+        if method == "GET":
+            return []
+        assert method == "POST"
+        return {"html_url": "https://github.com/fork-owner/client/pull/1"}
+
+    monkeypatch.setattr(client_review, "_github_api", api)
+    result = client_review._upsert_github_pr(tmp_path, "origin", "hermes/acme/2026-08-04", "acme", "title", "body")
+
+    assert result == {"url": "https://github.com/fork-owner/client/pull/1", "action": "created"}
+    assert calls[0][0] == "GET"
+    assert calls[1][2] == {"title": "title", "head": "hermes/acme/2026-08-04", "base": "acme", "body": "body"}
+
+
 def test_deprecated_features_are_not_matched(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "src/xtax/old.py")
     registry = {"features": [{"id": "xtax", "lifecycle": "deprecated", "paths": ["src/xtax/**"]}]}

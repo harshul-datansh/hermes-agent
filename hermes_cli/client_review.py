@@ -16,6 +16,9 @@ import socket
 import subprocess
 import time
 import shutil
+import urllib.error
+import urllib.parse
+import urllib.request
 from datetime import datetime
 from fnmatch import fnmatch
 from pathlib import Path
@@ -1916,6 +1919,85 @@ def _run_gh(repo: Path, *args: str) -> str:
         raise ValueError("GitHub PR delivery failed: " + _redact(exc.output[-1000:])) from exc
 
 
+def _github_repo_and_token(repo: Path, remote: str) -> tuple[str, str, str]:
+    """Resolve a GitHub repository and an existing Git credential in memory.
+
+    The token is obtained only from Git's configured credential helper, used
+    for this one HTTPS request, and never written, logged, returned to callers,
+    or included in an exception.  This gives the controller a secure delivery
+    path on machines that can push the fork but do not have GitHub CLI.
+    """
+    try:
+        remote_url = _git(repo, "remote", "get-url", remote)
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise ValueError("cannot inspect fork remote for PR delivery") from exc
+    normalized = remote_url.strip()
+    match = re.match(r"(?:https?://github\.com/|git@github\.com:)([^/\s]+)/([^/\s]+?)(?:\.git)?$", normalized, re.I)
+    if not match:
+        raise ValueError("fork remote must be a GitHub owner/repository URL for PR delivery")
+    owner, project = match.group(1), match.group(2)
+    credential_query = f"protocol=https\nhost=github.com\npath={owner}/{project}.git\n\n"
+    try:
+        credential = subprocess.run(["git", "credential", "fill"], input=credential_query, text=True,
+                                    encoding="utf-8", stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                                    timeout=15, check=False)
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise ValueError("Git credential manager is unavailable for PR delivery") from exc
+    fields = dict(line.split("=", 1) for line in credential.stdout.splitlines() if "=" in line)
+    token = str(fields.get("password") or "")
+    if credential.returncode != 0 or not token:
+        raise ValueError("no GitHub credential is available for fork PR delivery")
+    return owner, project, token
+
+
+def _github_api(repo: Path, remote: str, method: str, path: str, payload: dict[str, Any] | None = None) -> Any:
+    """Call the GitHub REST API using the repository's managed credential."""
+    owner, project, token = _github_repo_and_token(repo, remote)
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    request = urllib.request.Request(
+        f"https://api.github.com/repos/{urllib.parse.quote(owner, safe='')}/{urllib.parse.quote(project, safe='')}{path}",
+        data=data, method=method,
+        headers={"Accept": "application/vnd.github+json", "Authorization": f"Bearer {token}",
+                 "Content-Type": "application/json", "User-Agent": "hermes-client-review"},
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            raw = response.read().decode("utf-8")
+    except urllib.error.HTTPError as exc:
+        # GitHub response bodies can contain remote text; retain only the HTTP
+        # status so untrusted content and any credential-adjacent data cannot
+        # reach logs or Telegram.
+        raise ValueError(f"GitHub PR delivery API returned HTTP {exc.code}") from exc
+    except (OSError, urllib.error.URLError) as exc:
+        raise ValueError("GitHub PR delivery API request failed") from exc
+    try:
+        return json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError("GitHub PR delivery API returned invalid JSON") from exc
+
+
+def _upsert_github_pr(repo: Path, remote: str, head: str, base: str, title: str, body: str) -> dict[str, str]:
+    """Create or update a fork-only PR without requiring the GitHub CLI."""
+    owner, _project, _token = _github_repo_and_token(repo, remote)
+    query = urllib.parse.urlencode({"state": "open", "head": f"{owner}:{head}", "base": base})
+    existing = _github_api(repo, remote, "GET", f"/pulls?{query}")
+    if not isinstance(existing, list):
+        raise ValueError("GitHub PR lookup returned invalid data")
+    if existing:
+        first = existing[0] if isinstance(existing[0], dict) else {}
+        number = first.get("number")
+        url = str(first.get("html_url") or "")
+        if not isinstance(number, int) or not url:
+            raise ValueError("open fork PR has incomplete metadata")
+        updated = _github_api(repo, remote, "PATCH", f"/pulls/{number}", {"title": title, "body": body})
+        return {"url": str(updated.get("html_url") or url), "action": "updated"}
+    created = _github_api(repo, remote, "POST", "/pulls", {"title": title, "head": head, "base": base, "body": body})
+    url = str(created.get("html_url") or "") if isinstance(created, dict) else ""
+    if not url:
+        raise ValueError("GitHub did not return a PR URL")
+    return {"url": url, "action": "created"}
+
+
 def deliver_latest() -> dict[str, Any]:
     """Create or update fork-only delivery PRs after a successful integration."""
     latest = status().get("state")
@@ -1935,24 +2017,13 @@ def deliver_latest() -> dict[str, Any]:
     if not day_branch:
         raise ValueError("no day branch is available for delivery")
     # The base is always the writable fork trunk; upstream branches are never
-    # mentioned in a gh delivery command.
+    # mentioned in a delivery request.
     title = f"[hermes] {config['client_name']} {day_branch.rsplit('/', 1)[-1]}"
     body_path = root() / "runs" / str(latest["run_id"]) / "pr-body.md"
-    body_path.write_text(_delivery_body(latest), encoding="utf-8")
-    listed = _run_gh(repo, "pr", "list", "--head", day_branch, "--base", trunk, "--state", "open", "--json", "url")
-    try:
-        open_prs = json.loads(listed)
-    except json.JSONDecodeError as exc:
-        raise ValueError("GitHub CLI returned invalid PR data") from exc
-    if open_prs:
-        url = str(open_prs[0].get("url") or "")
-        if not url:
-            raise ValueError("open day PR has no URL")
-        _run_gh(repo, "pr", "edit", url, "--title", title, "--body-file", str(body_path))
-        day_pr = {"url": url, "action": "updated"}
-    else:
-        url = _run_gh(repo, "pr", "create", "--head", day_branch, "--base", trunk, "--title", title, "--body-file", str(body_path))
-        day_pr = {"url": url, "action": "created"}
+    body = _delivery_body(latest)
+    body_path.write_text(body, encoding="utf-8")
+    fork = str(topology["fork_remote"])
+    day_pr = _upsert_github_pr(repo, fork, day_branch, trunk, title, body)
     exception_prs = []
     for exception in latest["integration"].get("exceptions") or []:
         branch = str(exception.get("branch") or "")
@@ -1962,8 +2033,8 @@ def deliver_latest() -> dict[str, Any]:
         text = _redact(f"Reason: {exception.get('reason')}\n\n{exception.get('detail') or ''}\n")
         exception_body = body_path.with_name(f"exception-{exception.get('task_id')}.md")
         exception_body.write_text(text, encoding="utf-8")
-        url = _run_gh(repo, "pr", "create", "--head", branch, "--base", trunk, "--title", exception_title, "--body-file", str(exception_body))
-        exception_prs.append({"branch": branch, "url": url})
+        exception_pr = _upsert_github_pr(repo, fork, branch, trunk, exception_title, text)
+        exception_prs.append({"branch": branch, "url": exception_pr["url"], "action": exception_pr["action"]})
     delivery = {"at": time.time(), "day_pr": day_pr, "exception_prs": exception_prs}
     latest["delivery"] = delivery
     _write_json(root() / "state.json", latest)
@@ -2920,17 +2991,15 @@ def doctor() -> dict[str, Any]:
         telegram_ready = False
     checks.append({"name": "telegram alert delivery", "ok": telegram_ready,
                    "optional": True, "detail": "configured" if telegram_ready else "set client chat ID and TELEGRAM_BOT_TOKEN"})
-    gh = shutil.which("gh")
     github_ready = False
-    github_detail = "GitHub CLI (gh) is required for fork PR delivery"
-    if gh:
+    github_detail = "no repository GitHub credential is available for fork PR delivery"
+    if repo.is_dir() and topology.get("ok"):
         try:
-            probe = subprocess.run([gh, "auth", "status"], text=True, encoding="utf-8", stdout=subprocess.PIPE,
-                                   stderr=subprocess.STDOUT, timeout=10, check=False)
-            github_ready = probe.returncode == 0
-            github_detail = "configured" if github_ready else "GitHub CLI is installed but not authenticated for PR delivery"
-        except (OSError, subprocess.SubprocessError):
-            github_detail = "GitHub CLI readiness check failed"
+            _owner, _project, _token = _github_repo_and_token(repo, str(topology.get("fork_remote") or ""))
+            github_ready = True
+            github_detail = "configured through the repository Git credential manager"
+        except ValueError:
+            github_detail = "no repository GitHub credential is available for fork PR delivery"
     checks.append({"name": "GitHub PR delivery", "ok": github_ready, "optional": True, "detail": github_detail})
     return {"ready": all(item["ok"] for item in checks if not item.get("optional")), "checks": checks}
 
