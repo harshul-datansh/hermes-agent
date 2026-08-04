@@ -71,22 +71,22 @@ def test_run_records_read_only_intake_summary(tmp_path, monkeypatch):
     assert client_review.status()["state"]["run_id"] == result["run_id"]
 
 
-def test_classification_only_promotes_rules_and_marks_unclaimed_alert_only(tmp_path, monkeypatch):
+def test_classification_only_promotes_rules_and_keeps_unclaimed_patch_capable(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "src/live.py\nsrc/unknown.py")
     registry = {"features": [{"id": "live", "stage": "dev", "paths": ["src/live.py"]}]}
     rows = client_review.classify(tmp_path, "base", "head", registry, "production")
     assert rows[0]["rule_set"] == "production"
     assert rows[1]["feature"] == "unclaimed"
-    assert rows[1]["alert_only"] is True
+    assert rows[1]["alert_only"] is False
 
 
-def test_registry_default_cannot_make_an_unclaimed_file_patchable(tmp_path, monkeypatch):
+def test_registry_default_leaves_unclaimed_file_under_production_rules(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "src/unknown.py")
     rows = client_review.classify(tmp_path, "base", "head", {
         "default_feature": {"id": "all-code", "stage": "production"}, "features": [],
     }, "qa")
     assert rows[0]["feature"] == "unclaimed"
-    assert rows[0]["alert_only"] is True
+    assert rows[0]["alert_only"] is False
 
 
 def test_suspicious_client_text_is_alert_only_with_evidence(tmp_path, monkeypatch):
@@ -146,13 +146,14 @@ def test_work_items_group_by_feature_and_keep_alert_only_out_of_patch_queue():
     assert any(item["status"] == "alert-only" for item in items)
 
 
-def test_trigger_routing_marks_sensitive_changes_alert_only_and_caps_sol(tmp_path, monkeypatch):
+def test_trigger_routing_keeps_sensitive_changes_patch_capable_and_caps_sol(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "+ await migration()")
     rows = client_review.apply_trigger_classes(tmp_path, "base", "head", [{
         "path": "src/auth.py", "feature": "core", "rule_set": "production", "alert_only": False,
     }])
-    assert rows[0]["alert_only"] is True
-    assert "alert-only-sensitive-contract" in rows[0]["triggers"]
+    assert rows[0]["alert_only"] is False
+    assert rows[0]["driver"] == "gpt-5.6-terra"
+    assert "high-risk-contract-requires-strong-review" in rows[0]["triggers"]
 
     routed = client_review.annotate_work_item_routing([
         {"work_item_id": "one", "driver": "gpt-5.6-sol", "alert_only": False},
