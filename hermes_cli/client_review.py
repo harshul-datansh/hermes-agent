@@ -1927,6 +1927,10 @@ def _telegram_message(latest: dict[str, Any], config: dict[str, Any] | None = No
         lines.append(f"Unreviewed: {sum(int(row.get('hunks') or 1) for row in unreviewed)} hunks in {len(top_features)} features (top: {', '.join(top_features)})")
     if integration:
         lines.append(f"Integrated: {len(integration.get('integrated_task_ids') or [])}; exceptions: {len(integration.get('exceptions') or [])}")
+    if latest.get("unforward_ported_commits"):
+        lines.append(f"Not forward ported to main: {len(latest['unforward_ported_commits'])} commit(s)")
+    if latest.get("notes"):
+        lines.append("Health: " + "; ".join(_redact(str(note))[:240] for note in latest["notes"][:3]))
     if (latest.get("delivery") or {}).get("day_pr", {}).get("url"):
         lines.append("PR: " + str(latest["delivery"]["day_pr"]["url"]))
     summary = root() / "runs" / str(latest.get("run_id") or "") / "summary.md"
@@ -2979,6 +2983,8 @@ def run_once() -> dict[str, Any]:
                                "day_branch": day,
                                "unforward_ported_commits": forward_port,
                                "notice": "Intake is complete. Queue safe work to Kanban only after the configured fork topology is valid."})
+                if not any(branch.get("work_items") for branch in branch_results):
+                    result["integration_worktree_cleanup"] = _cleanup_integration_worktree(repo, result)
                 pipeline_state["unreviewed"] = {
                     branch_result["branch"]: [row.get("path") for row in branch_result.get("unreviewed", [])]
                     for branch_result in branch_results
@@ -2992,7 +2998,10 @@ def run_once() -> dict[str, Any]:
         (run_dir / "summary.md").write_text(_summary_markdown(result), encoding="utf-8")
         # One run produces at most one alert. Routine no-change, clean intake
         # remains silent; aborts and changed reviews are observable.
-        if result.get("status") != "reviewed" or result.get("changed_files"):
+        requires_summary = (result.get("status") != "reviewed" or bool(result.get("changed_files")) or
+                            bool(result.get("unforward_ported_commits")) or
+                            any("no merge base" in str(note).lower() for note in result.get("notes", [])))
+        if requires_summary:
             result["alert"] = send_run_alert(result, validation.get("config") if isinstance(validation, dict) else None)
         _write_json(root() / "state.json", result)
         return result
