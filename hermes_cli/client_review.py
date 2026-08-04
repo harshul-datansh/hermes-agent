@@ -1552,9 +1552,10 @@ def _cleanup_finalized_worker_worktrees(repo: Path, latest: dict[str, Any], task
     try:
         for task_id in sorted(task_ids):
             task = kanban_db.get_task(conn, task_id)
-            workspace = Path(str(getattr(task, "workspace_path", "") or ""))
-            if not workspace:
+            workspace_text = str(getattr(task, "workspace_path", "") or "").strip()
+            if not workspace_text:
                 continue
+            workspace = Path(workspace_text)
             try:
                 workspace.resolve().relative_to(run_root)
             except (OSError, ValueError):
@@ -1582,6 +1583,67 @@ def _cleanup_finalized_worker_worktrees(repo: Path, latest: dict[str, Any], task
     except (OSError, subprocess.CalledProcessError) as exc:
         failed.append({"task_id": "worktree-prune", "reason": _redact(str(exc))[:300]})
     return {"removed_task_ids": removed, "failures": failed, "at": time.time()}
+
+
+def _cleanup_completed_driver_conflicts(repo: Path, config: dict[str, Any]) -> dict[str, Any]:
+    """Release a driver-resolved fork-sync tree before the next guarded run.
+
+    A fork-sync conflict intentionally leaves the integration worktree live for
+    the *driver only*.  Once that driver has completed and explicitly reported
+    a resolved conflict, retaining it serves no purpose and consumes a
+    worktree slot.  Never infer success from a card title alone: require a
+    terminal task state, a structured ``conflict_resolved`` result, and a path
+    beneath the configured client-review worktree root.
+    """
+    from hermes_cli import kanban_db
+
+    configured_root = Path(str(config.get("worktree_root") or repo.parent / "hedgi-worktrees")).expanduser().resolve()
+    removed: list[str] = []
+    skipped: list[dict[str, str]] = []
+    failures: list[dict[str, str]] = []
+    conn = kanban_db.connect()
+    try:
+        rows = conn.execute(
+            "SELECT * FROM tasks WHERE created_by = ? AND title LIKE ?",
+            ("client-review", "[client-review driver conflict] %"),
+        ).fetchall()
+        for row in rows:
+            task = kanban_db.Task.from_row(row)
+            if task.status not in {"done", "archived"}:
+                continue
+            try:
+                result = json.loads(task.result or "{}")
+            except (TypeError, json.JSONDecodeError):
+                skipped.append({"task_id": task.id, "reason": "driver result is not structured JSON"})
+                continue
+            if not isinstance(result, dict) or result.get("conflict_resolved") is not True:
+                skipped.append({"task_id": task.id, "reason": "driver did not confirm conflict_resolved"})
+                continue
+            workspace_text = str(task.workspace_path or "").strip()
+            if not workspace_text:
+                skipped.append({"task_id": task.id, "reason": "driver task has no workspace path"})
+                continue
+            workspace = Path(workspace_text)
+            try:
+                workspace.resolve().relative_to(configured_root)
+            except (OSError, ValueError):
+                skipped.append({"task_id": task.id, "reason": "workspace is outside the configured worktree root"})
+                continue
+            if not workspace.exists():
+                continue
+            try:
+                _git_run(repo, "worktree", "remove", "--force", str(workspace))
+                removed.append(task.id)
+            except (OSError, subprocess.CalledProcessError) as exc:
+                failures.append({"task_id": task.id, "reason": _redact(str(exc))[:300]})
+    finally:
+        conn.close()
+    if removed:
+        try:
+            _git_run(repo, "worktree", "prune")
+        except (OSError, subprocess.CalledProcessError) as exc:
+            failures.append({"task_id": "worktree-prune", "reason": _redact(str(exc))[:300]})
+    return {"removed_task_ids": removed, "skipped": skipped, "failures": failures, "at": time.time()}
 
 
 def integrate_reconciled() -> dict[str, Any]:
@@ -2870,6 +2932,7 @@ def run_once() -> dict[str, Any]:
         if validation["ok"]:
             controller_validation = validate_topology(repo, cfg, str(validation["config"]["client_name"]))
         recovery = None
+        driver_conflict_cleanup = None
         capacity = None
         if validation["ok"]:
             try:
@@ -2877,6 +2940,15 @@ def run_once() -> dict[str, Any]:
             except (OSError, subprocess.CalledProcessError, ValueError) as exc:
                 validation = {**validation, "ok": False,
                               "errors": [*validation.get("errors", []), f"crash recovery failed: {_redact(str(exc))}"]}
+        if validation["ok"] and controller_validation["ok"]:
+            try:
+                driver_conflict_cleanup = _cleanup_completed_driver_conflicts(repo, validation["config"])
+            except (OSError, subprocess.CalledProcessError, ValueError) as exc:
+                # This is observable but does not downgrade a valid intake. A
+                # stale completed tree can be removed on the next run.
+                driver_conflict_cleanup = {"removed_task_ids": [], "skipped": [],
+                                           "failures": [{"task_id": "driver-conflict-cleanup",
+                                                         "reason": _redact(str(exc))[:300]}], "at": time.time()}
         if validation["ok"] and controller_validation["ok"]:
             try:
                 capacity = worktree_preflight(repo, validation["config"])
@@ -2904,7 +2976,8 @@ def run_once() -> dict[str, Any]:
                 registry_validation = {"ok": False, "errors": [f"cannot load configured features.json source: {_redact(str(exc))}"], "notes": []}
         result: dict[str, Any] = {"run_id": run_id, "started_at": time.time(), "validation": _public_validation(validation),
                                   "topology": controller_validation, "registry_validation": registry_validation,
-                                  "capacity": capacity, "status": "partial", "notes": recovery_notes, "recovery": recovery}
+                                  "capacity": capacity, "status": "partial", "notes": recovery_notes, "recovery": recovery,
+                                  "driver_conflict_cleanup": driver_conflict_cleanup}
         if validation["ok"] and controller_validation["ok"] and capacity and capacity["ok"] and registry_validation and registry_validation["ok"] and registry:
             try:
                 config = validation["config"]

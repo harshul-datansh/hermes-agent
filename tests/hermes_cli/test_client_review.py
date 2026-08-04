@@ -197,6 +197,59 @@ def test_integration_commands_accept_repository_maven_wrappers_only():
     assert commands == [["backend\\mvnw.cmd", "-DskipTests", "compile"], ["./backend/mvnw", "test"]]
 
 
+def test_worker_cleanup_ignores_tasks_without_a_workspace_path(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db
+
+    class Connection:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(client_review, "settings", lambda: {"repository": str(tmp_path), "upstream_remote": "origin"})
+    monkeypatch.setattr(client_review, "validate", lambda *_args: {"config": {"worktree_root": str(tmp_path / "worktrees")}})
+    monkeypatch.setattr(kanban_db, "connect", lambda: Connection())
+    monkeypatch.setattr(kanban_db, "get_task", lambda *_args: SimpleNamespace(workspace_path=None))
+    calls = []
+    monkeypatch.setattr(client_review, "_git_run", lambda *_args: calls.append(_args) or "")
+
+    result = client_review._cleanup_finalized_worker_worktrees(
+        tmp_path, {"run_id": "run-1", "task_map": {}}, {"task-1"},
+    )
+
+    assert result["failures"] == []
+    assert not any("worktree" in call for call in calls)
+
+
+def test_completed_driver_conflict_cleanup_requires_explicit_resolution(tmp_path, monkeypatch):
+    from hermes_cli import kanban_db
+
+    workspace = tmp_path / "worktrees" / "run-1" / "integration"
+    workspace.mkdir(parents=True)
+
+    class Connection:
+        def execute(self, *_args):
+            return self
+
+        def fetchall(self):
+            return [object()]
+
+        def close(self):
+            return None
+
+    task = SimpleNamespace(id="driver-1", status="done", result=json.dumps({"conflict_resolved": True}),
+                           workspace_path=str(workspace))
+    monkeypatch.setattr(kanban_db, "connect", lambda: Connection())
+    monkeypatch.setattr(kanban_db.Task, "from_row", staticmethod(lambda _row: task))
+    calls = []
+    monkeypatch.setattr(client_review, "_git_run", lambda *_args: calls.append(_args) or "")
+
+    result = client_review._cleanup_completed_driver_conflicts(
+        tmp_path, {"worktree_root": str(tmp_path / "worktrees")},
+    )
+
+    assert result["removed_task_ids"] == ["driver-1"]
+    assert any(call[1:4] == ("worktree", "remove", "--force") for call in calls)
+
+
 def test_deprecated_features_are_not_matched(tmp_path, monkeypatch):
     monkeypatch.setattr(client_review, "_git", lambda *_args: "src/xtax/old.py")
     registry = {"features": [{"id": "xtax", "lifecycle": "deprecated", "paths": ["src/xtax/**"]}]}
