@@ -2920,6 +2920,18 @@ def doctor() -> dict[str, Any]:
         telegram_ready = False
     checks.append({"name": "telegram alert delivery", "ok": telegram_ready,
                    "optional": True, "detail": "configured" if telegram_ready else "set client chat ID and TELEGRAM_BOT_TOKEN"})
+    gh = shutil.which("gh")
+    github_ready = False
+    github_detail = "GitHub CLI (gh) is required for fork PR delivery"
+    if gh:
+        try:
+            probe = subprocess.run([gh, "auth", "status"], text=True, encoding="utf-8", stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, timeout=10, check=False)
+            github_ready = probe.returncode == 0
+            github_detail = "configured" if github_ready else "GitHub CLI is installed but not authenticated for PR delivery"
+        except (OSError, subprocess.SubprocessError):
+            github_detail = "GitHub CLI readiness check failed"
+    checks.append({"name": "GitHub PR delivery", "ok": github_ready, "optional": True, "detail": github_detail})
     return {"ready": all(item["ok"] for item in checks if not item.get("optional")), "checks": checks}
 
 
