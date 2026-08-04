@@ -1069,10 +1069,25 @@ def prepare_day_branch(repo: Path, config: dict[str, Any], topology: dict[str, A
                 day = day_branch_name(config, suffix)
             _git_run(integration, "checkout", "-b", day)
             _git_run(integration, "push", "--set-upstream", fork, day)
-    except Exception:
-        # Keep the worktree for recovery diagnostics. The stale-run path will
-        # prune only this run's controlled root on the next invocation.
-        raise
+    except Exception as exc:
+        # A fork-sync conflict is a human ownership decision. Record the exact
+        # paths, abort the merge, and release this failed controller worktree
+        # immediately so a failed intake cannot exhaust the next run's slots.
+        try:
+            conflicts = [path for path in _git(integration, "diff", "--name-only", "--diff-filter=U").splitlines() if path]
+        except (OSError, subprocess.CalledProcessError):
+            conflicts = []
+        try:
+            _git_run(integration, "merge", "--abort")
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        try:
+            _git_run(repo, "worktree", "remove", "--force", str(integration))
+            _git_run(repo, "worktree", "prune")
+        except (OSError, subprocess.CalledProcessError):
+            pass
+        detail = f"fork trunk sync conflict: {', '.join(conflicts)}" if conflicts else _redact(str(exc))
+        raise ValueError(detail) from exc
     return {"day_branch": day, "integration_worktree": str(integration), "trunk": trunk,
             "upstream_ref": qa_ref, "fork_remote": fork, "upstream_remote": upstream}
 
@@ -1855,6 +1870,8 @@ def _telegram_message(latest: dict[str, Any], config: dict[str, Any] | None = No
             lines.append(f"Needs you [{severity}] {owner}: {finding.get('summary') or finding.get('title') or finding.get('rule') or 'finding'} ({location})")
     if isinstance(reconciliation, dict) and reconciliation.get("rejected"):
         lines.append(f"Needs dev attention: {len(reconciliation['rejected'])} item(s)")
+    if latest.get("errors"):
+        lines.append("Errors: " + "; ".join(_redact(str(error))[:500] for error in latest["errors"][:3]))
     unreviewed = [row for branch in branches for row in (branch.get("unreviewed") or []) if isinstance(row, dict)]
     if unreviewed:
         top_features = sorted({str(row.get("feature") or "unclaimed") for row in unreviewed})[:8]
