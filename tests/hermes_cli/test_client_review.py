@@ -260,7 +260,7 @@ def test_full_suite_can_recreate_a_temporary_tree_after_integration_cleanup(tmp_
         {"worktree_root": str(tmp_path / "worktrees")},
     )
 
-    assert worktree == tmp_path / "worktrees" / "run-1" / "full-suite"
+    assert worktree == (tmp_path / "worktrees" / "run-1" / "full-suite").resolve()
     assert calls == [(tmp_path, "worktree", "add", "--detach", str(worktree), "hermes/acme/2026-08-04")]
 
 
