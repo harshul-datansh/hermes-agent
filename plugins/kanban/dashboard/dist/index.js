@@ -1648,6 +1648,7 @@
         state.reconciliation && (state.reconciliation.rejected || []).length ? h("span", { className: "text-destructive" }, `needs decision: ${state.reconciliation.rejected.length}`) : null,
         state.worktree_cleanup ? h("span", { className: "text-muted-foreground" }, `worktrees cleared: ${(state.worktree_cleanup.removed_task_ids || []).length}`) : null,
         state.driver_conflict_cleanup ? h("span", { className: "text-muted-foreground" }, `driver conflict trees cleared: ${(state.driver_conflict_cleanup.removed_task_ids || []).length}`) : null,
+        doctorData && (doctorData.checks || []).some(function (check) { return check.name === "GitHub PR delivery" && !check.ok; }) ? h("span", { className: "text-destructive" }, "PR delivery needs GitHub CLI") : null,
         state.errors && state.errors.length ? h("span", { className: "text-destructive" }, state.errors[0]) : null
       ) : null,
       open ? h("div", { className: "flex flex-col gap-2 text-sm" },
