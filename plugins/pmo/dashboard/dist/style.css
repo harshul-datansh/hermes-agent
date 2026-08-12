@@ -1,0 +1,2421 @@
+/*
+ * Hermes Kanban — dashboard plugin styles.
+ *
+ * All colors reference theme CSS vars so the board reskins with the
+ * active dashboard theme. No hardcoded palette.
+ */
+
+.hermes-kanban {
+  width: 100%;
+}
+
+/* ---- Code/pre reset (theme-immune default) --------------------------- *
+ *
+ * Themes (shipped AND user-installable) routinely paint every <code> and
+ * <pre> on the page with an opaque accent-color fill. That's fine for a
+ * Markdown doc page; it's wrong for the kanban plugin, which uses <code>
+ * for event payloads, run metadata, log panes, and similar raw-data
+ * surfaces that must read as plain text on the board's own background.
+ *
+ * Rather than play whack-a-mole with theme rules (the pre-#21086 approach
+ * was a single ``.hermes-kanban code { background: transparent }`` rule
+ * that lost specificity fights in the drawer context), reset EVERY
+ * <code>/<pre> inside the kanban plugin container to transparent with
+ * ``!important``, then opt back in ONLY on the class that carries
+ * intentional styling (``.hermes-kanban-md code``, the inline code pill
+ * inside rendered task-body Markdown).
+ *
+ * Net effect: any new theme, shipped or third-party, can introduce
+ * whatever global code-fill rule it wants — kanban surfaces stay clean
+ * unless the theme deliberately targets our internal class names.
+ * Regression coverage: #21086 (task-drawer event payloads unreadable
+ * across every shipped theme).
+ */
+.hermes-kanban code,
+.hermes-kanban pre,
+.hermes-kanban-drawer code,
+.hermes-kanban-drawer pre {
+  background: transparent !important;
+  color: inherit;
+}
+/* The Markdown renderer intentionally paints a subtle code pill behind
+ * inline ``<code>`` inside task-body prose — but NOT inside a fenced
+ * block (those are a ``<pre class="hermes-kanban-md-code">`` with a
+ * bare ``<code>`` inside, and the pill would double up with the pre
+ * background). ``:not()`` scopes this opt-back-in to inline code only.
+ *
+ * Uses ``color-mix(currentColor ...)`` rather than ``--color-foreground``
+ * so the pill renders consistently even when a theme forgets to set
+ * ``--color-foreground`` (pre-existing safeguard from #18576).
+ */
+.hermes-kanban .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
+  background: color-mix(in srgb, currentColor 8%, transparent) !important;
+}
+/* Tighten contrast on the drawer-specific payload class — it lives on
+ * its own line in the events list, so matching the muted-foreground
+ * color keeps it visually distinct from the event title without
+ * screaming for attention. */
+.hermes-kanban-event-payload,
+.hermes-kanban-drawer .hermes-kanban-event-payload {
+  color: var(--color-muted-foreground) !important;
+}
+
+/* ---- Columns layout -------------------------------------------------- */
+
+.hermes-kanban-columns {
+  display: flex;
+  gap: 0.75rem;
+  align-items: start;
+  overflow-x: auto;
+}
+
+.hermes-kanban-columns--scrollable {
+  cursor: grab;
+}
+
+.hermes-kanban-columns--panning,
+.hermes-kanban-columns--panning * {
+  cursor: grabbing !important;
+}
+
+.hermes-kanban-column {
+  flex: 0 0 280px;
+  display: flex;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  padding: 0.5rem;
+  min-height: 200px;
+  max-height: calc(100vh - 220px);
+  transition: border-color 120ms ease, background-color 120ms ease;
+}
+
+.hermes-kanban-column--drop {
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 8%, var(--color-card));
+}
+
+.hermes-kanban-column-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.25rem 0.25rem 0.35rem;
+  font-weight: 600;
+  font-size: 0.85rem;
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-column-label {
+  flex: 1;
+  letter-spacing: 0.01em;
+}
+
+.hermes-kanban-column-count {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.hermes-kanban-column-add {
+  appearance: none;
+  background: transparent;
+  border: 1px solid var(--color-border);
+  color: var(--color-foreground);
+  border-radius: var(--radius-sm, 0.25rem);
+  width: 22px;
+  height: 22px;
+  line-height: 1;
+  font-size: 1rem;
+  cursor: pointer;
+}
+.hermes-kanban-column-add:hover {
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+}
+
+.hermes-kanban-column-sub {
+  padding: 0 0.25rem 0.5rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  margin-bottom: 0.5rem;
+}
+
+.hermes-kanban-column-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  overflow-y: auto;
+  padding-right: 0.1rem;
+  flex: 1;
+  min-height: 0;
+}
+
+.hermes-kanban-empty {
+  padding: 1.5rem 0.5rem;
+  text-align: center;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground);
+  border: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+/* ---- Status dots ----------------------------------------------------- */
+
+.hermes-kanban-dot {
+  display: inline-block;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: 999px;
+  background: var(--color-muted-foreground);
+}
+.hermes-kanban-dot-triage   { background: #b47dd6; }  /* lilac — fresh/unspecified */
+.hermes-kanban-dot-todo     { background: var(--color-muted-foreground); }
+.hermes-kanban-dot-ready    { background: #d4b348; }  /* amber */
+.hermes-kanban-dot-running  { background: #3fb97d; }  /* green */
+.hermes-kanban-dot-blocked  { background: var(--color-destructive, #d14a4a); }
+.hermes-kanban-dot-done     { background: #4a8cd1; }  /* blue */
+.hermes-kanban-dot-archived { background: var(--color-border); }
+
+/* ---- Progress pill (N/M child tasks done) --------------------------- */
+
+.hermes-kanban-progress {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.62rem;
+  padding: 0.05rem 0.35rem;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+  border: 1px solid color-mix(in srgb, var(--color-border) 80%, transparent);
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.02em;
+}
+.hermes-kanban-progress--full {
+  background: color-mix(in srgb, #3fb97d 22%, transparent);
+  border-color: color-mix(in srgb, #3fb97d 45%, transparent);
+  color: var(--color-foreground);
+}
+
+/* ---- Lanes (per-profile sub-grouping inside Running) ---------------- */
+
+.hermes-kanban-lane {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  padding: 0.25rem 0 0.35rem;
+  border-top: 1px dashed color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-lane:first-child {
+  border-top: 0;
+  padding-top: 0;
+}
+.hermes-kanban-lane-head {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.65rem;
+  /* Assignee/profile names are case-sensitive. Do not visually uppercase
+   * lane headers, otherwise a valid `analyst` profile appears as `ANALYST`
+   * in the WebUI and users may copy the wrong casing back into edits. */
+  letter-spacing: 0.02em;
+  color: var(--color-muted-foreground);
+  padding: 0 0.1rem;
+}
+.hermes-kanban-lane-name {
+  font-weight: 600;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.hermes-kanban-lane-count {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ---- Card ------------------------------------------------------------ */
+
+.hermes-kanban-card {
+  cursor: grab;
+  transition: transform 100ms ease, box-shadow 100ms ease;
+}
+.hermes-kanban-card:hover {
+  box-shadow: 0 1px 0 0 var(--color-ring) inset, 0 0 0 1px var(--color-ring) inset;
+}
+.hermes-kanban-card:active {
+  cursor: grabbing;
+  transform: scale(0.995);
+}
+
+.hermes-kanban-card-content {
+  padding: 0.5rem 0.6rem !important;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+
+.hermes-kanban-card-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.hermes-kanban-card-id {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.65rem;
+  color: var(--color-muted-foreground);
+  letter-spacing: 0.03em;
+}
+
+.hermes-kanban-card-title {
+  font-size: 0.85rem;
+  font-weight: 500;
+  line-height: 1.3;
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.hermes-kanban-card-meta {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  gap: 0.55rem;
+}
+
+.hermes-kanban-priority {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  background: color-mix(in srgb, var(--color-ring) 18%, transparent);
+  color: var(--color-foreground);
+  border: 1px solid color-mix(in srgb, var(--color-ring) 40%, transparent);
+}
+
+.hermes-kanban-tag {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+}
+
+.hermes-kanban-needs-assignee {
+  font-size: 0.6rem !important;
+  padding: 0.05rem 0.3rem !important;
+  background: color-mix(in srgb, var(--color-warning, #d4b348) 16%, transparent);
+  border-color: color-mix(in srgb, var(--color-warning, #d4b348) 45%, var(--color-border));
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-assignee {
+  font-weight: 500;
+  color: color-mix(in srgb, var(--color-foreground) 80%, var(--color-muted-foreground));
+}
+.hermes-kanban-unassigned {
+  font-style: italic;
+}
+.hermes-kanban-ago {
+  margin-left: auto;
+}
+
+/* ---- Create-task dialog ----------------------------------------------- */
+
+/* Wider than the base dialog so the workspace/parent selectors and the
+   labeled two-column rows breathe; still clamped to the viewport. */
+.hermes-kanban-create-dialog {
+  width: 36rem;
+}
+
+/* ---- Drawer (task detail side panel) --------------------------------- */
+
+.hermes-kanban-drawer-shade {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+  z-index: 60;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.hermes-kanban-drawer {
+  width: min(var(--hermes-kanban-drawer-width, 640px), 92vw);
+  height: 100vh;
+  /* Dynamic viewport unit excludes the mobile browser's collapsing chrome
+     (URL/nav bars) so the drawer's bottom row stays reachable. Falls back to
+     100vh on browsers without dvh support. */
+  height: 100dvh;
+  max-height: 100dvh;
+  background: var(--color-card);
+  border-left: 1px solid var(--color-border);
+  display: flex;
+  flex-direction: column;
+  box-shadow: -4px 0 18px rgba(0, 0, 0, 0.35);
+  animation: hermes-kanban-drawer-in 180ms ease-out;
+}
+
+@keyframes hermes-kanban-drawer-in {
+  from { transform: translateX(100%); opacity: 0.3; }
+  to   { transform: translateX(0);    opacity: 1; }
+}
+
+.hermes-kanban-drawer-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.6rem 0.8rem;
+  /* Honor the top safe-area inset (notch) so the task id / close button are
+     not clipped on mobile. */
+  padding-top: max(0.6rem, env(safe-area-inset-top));
+  border-bottom: 1px solid var(--color-border);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+
+/* On mobile the dashboard shell renders a fixed top bar (min-h-14, hidden at
+   the lg breakpoint). The drawer is a body-level z-60 overlay starting at the
+   viewport top, so its header would sit behind that bar. Push the header down
+   by the bar height (3.5rem) plus the top safe-area inset. */
+@media (max-width: 1023px) {
+  .hermes-kanban-drawer-head {
+    padding-top: calc(3.5rem + env(safe-area-inset-top));
+  }
+}
+
+.hermes-kanban-drawer-close {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  font-size: 1.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.25rem;
+}
+.hermes-kanban-drawer-close:hover { color: var(--color-foreground); }
+
+/* Attachment download trigger — styled as a link, rendered as a <button>
+   so the click handler can fetch with the session token (#35338). */
+.hermes-kanban-attachment-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  text-align: left;
+  color: var(--color-primary, #6ea8fe);
+  cursor: pointer;
+  text-decoration: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+}
+.hermes-kanban-attachment-link:hover { text-decoration: underline; }
+
+.hermes-kanban-drawer-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.9rem;
+  /* When no comment row is rendered (loading / error states), the scrolling
+     body is the bottom-most element — extend its bottom padding past the
+     mobile browser chrome so the last content stays readable. */
+  padding-bottom: max(0.9rem, calc(0.9rem + env(safe-area-inset-bottom)));
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.hermes-kanban-drawer-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.hermes-kanban-drawer-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.5rem 0.6rem;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+
+.hermes-kanban-meta-row {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+}
+.hermes-kanban-meta-label {
+  width: 92px;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-meta-value {
+  color: var(--color-foreground);
+  word-break: break-word;
+}
+
+.hermes-kanban-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+/* Specifier result banner — sits directly under the status action row. */
+.hermes-kanban-msg-ok,
+.hermes-kanban-msg-err {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.55rem;
+  border-radius: 0.375rem;
+  font-size: 0.85rem;
+  line-height: 1.3;
+}
+.hermes-kanban-msg-ok {
+  background: rgba(46, 160, 67, 0.12);
+  color: #2ea043;
+  border: 1px solid rgba(46, 160, 67, 0.35);
+}
+.hermes-kanban-msg-err {
+  background: rgba(248, 81, 73, 0.12);
+  color: #f85149;
+  border: 1px solid rgba(248, 81, 73, 0.35);
+}
+
+/* ---- Home channel subscription toggles (per-platform, per-task) ----- */
+
+.hermes-kanban-home-subs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.hermes-kanban-home-sub {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  text-transform: lowercase;
+  letter-spacing: 0.02em;
+}
+.hermes-kanban-home-sub--on {
+  /* Subscribed toggle — use a strong ring-colored accent so the on/off
+   * distinction reads at a glance, not just from the ✓ prefix. Border +
+   * filled background + bolder weight keep the state obvious across
+   * themes (tested on default teal and NERV orange). */
+  border-color: var(--color-ring);
+  background: color-mix(in srgb, var(--color-ring) 32%, transparent);
+  color: var(--color-foreground);
+  font-weight: 600;
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--color-ring) 40%, transparent);
+}
+
+.hermes-kanban-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+
+.hermes-kanban-section-head {
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-pre {
+  margin: 0;
+  padding: 0.5rem 0.6rem;
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: color-mix(in srgb, var(--color-foreground) 4%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  color: var(--color-foreground);
+}
+
+.hermes-kanban-comment {
+  border-left: 2px solid color-mix(in srgb, var(--color-ring) 35%, transparent);
+  padding-left: 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.hermes-kanban-comment-head {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+}
+.hermes-kanban-comment-author {
+  font-weight: 600;
+  color: var(--color-foreground);
+}
+.hermes-kanban-comment-ago {
+  color: var(--color-muted-foreground);
+}
+
+.hermes-kanban-event {
+  display: flex;
+  gap: 0.5rem;
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+.hermes-kanban-event-kind {
+  color: var(--color-foreground);
+  min-width: 6rem;
+}
+.hermes-kanban-event-payload {
+  color: var(--color-muted-foreground);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 280px;
+}
+
+/* Comment footer = workflow hint + input row. The border-top lives on the
+   wrapper so the hint sits inside the same visual block as the input. */
+.hermes-kanban-drawer-comment-foot {
+  border-top: 1px solid var(--color-border);
+  background: color-mix(in srgb, var(--color-card) 90%, transparent);
+}
+
+.hermes-kanban-comment-hint {
+  padding: 0.45rem 0.75rem 0;
+  cursor: help;
+}
+
+.hermes-kanban-drawer-comment-row {
+  display: flex;
+  gap: 0.4rem;
+  padding: 0.55rem 0.75rem;
+  /* Keep the comment input clear of the mobile browser nav bar / home
+     indicator by extending the bottom padding with the safe-area inset. */
+  padding-bottom: max(0.55rem, calc(0.55rem + env(safe-area-inset-bottom)));
+}
+
+.hermes-kanban-count {
+  display: inline-flex;
+  gap: 0.2rem;
+  align-items: center;
+}
+
+/* ---- Selection chrome ----------------------------------------------- */
+
+.hermes-kanban-card--selected :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-ring) inset,
+              0 0 0 1px var(--color-ring) inset;
+  background: color-mix(in srgb, var(--color-ring) 6%, var(--color-card));
+}
+
+/* Batch drag source styling — cards that are part of the current multi-drag.
+   The browser ghost image floats; we dim the original DOM nodes so the user
+   sees the whole set is in-flight. */
+.hermes-kanban-card--dragging-source :where(.hermes-kanban-card-content) {
+  opacity: 0.45;
+  filter: grayscale(0.6);
+  transition: opacity 120ms ease, filter 120ms ease;
+}
+
+.hermes-kanban-card-check {
+  width: 0.85rem;
+  height: 0.85rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Bulk action bar ------------------------------------------------ */
+
+.hermes-kanban-bulk {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: color-mix(in srgb, var(--color-ring) 10%, var(--color-card));
+  border: 1px solid color-mix(in srgb, var(--color-ring) 40%, var(--color-border));
+  border-radius: var(--radius-sm, 0.25rem);
+  flex-wrap: wrap;
+}
+.hermes-kanban-bulk-count {
+  font-weight: 600;
+  font-size: 0.75rem;
+  padding-right: 0.25rem;
+}
+
+.hermes-kanban-bulk > button,
+.hermes-kanban-bulk-reassign > button {
+  height: 1.7rem !important;
+  padding: 0 0.5rem !important;
+  font-size: 0.7rem !important;
+  border: 1px solid var(--color-border);
+  cursor: pointer;
+}
+.hermes-kanban-bulk > button:hover:not(:disabled),
+.hermes-kanban-bulk-reassign > button:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-foreground) 8%, transparent);
+}
+.hermes-kanban-bulk-reassign {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+
+/* ---- Dependency editor chips --------------------------------------- */
+
+.hermes-kanban-deps-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.4rem;
+}
+.hermes-kanban-deps-label {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  color: var(--color-muted-foreground);
+  min-width: 4rem;
+}
+.hermes-kanban-deps-chips {
+  display: flex;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+  flex: 1;
+}
+.hermes-kanban-deps-empty {
+  font-size: 0.7rem;
+  color: var(--color-muted-foreground);
+  font-style: italic;
+}
+.hermes-kanban-dep-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.15rem;
+  padding: 0.1rem 0.35rem;
+  background: color-mix(in srgb, var(--color-foreground) 6%, transparent);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.68rem;
+  color: var(--color-foreground);
+}
+.hermes-kanban-dep-chip-x {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+  padding: 0 0.15rem;
+}
+.hermes-kanban-dep-chip-x:hover { color: var(--color-destructive, #d14a4a); }
+
+/* ---- Inline edit affordances --------------------------------------- */
+
+.hermes-kanban-editable {
+  cursor: pointer;
+  border-bottom: 1px dotted color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+.hermes-kanban-editable:hover {
+  color: var(--color-foreground);
+  border-bottom-color: var(--color-ring);
+}
+
+.hermes-kanban-drawer-title-text {
+  cursor: pointer;
+}
+.hermes-kanban-drawer-title-text:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--color-ring);
+  text-decoration-style: dotted;
+  text-underline-offset: 3px;
+}
+
+.hermes-kanban-edit-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  width: 100%;
+}
+
+.hermes-kanban-section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.hermes-kanban-edit-link {
+  appearance: none;
+  background: transparent;
+  border: 0;
+  color: var(--color-muted-foreground);
+  font-size: 0.7rem;
+  letter-spacing: 0.05em;
+  cursor: pointer;
+  padding: 0;
+}
+.hermes-kanban-edit-link:hover { color: var(--color-ring); }
+
+.hermes-kanban-textarea {
+  width: 100%;
+  min-height: 8rem;
+  background: var(--color-card);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  padding: 0.5rem 0.6rem;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  line-height: 1.5;
+  resize: vertical;
+}
+.hermes-kanban-textarea:focus {
+  outline: none;
+  border-color: var(--color-ring);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-ring) 30%, transparent);
+}
+
+/* ---- Markdown rendering -------------------------------------------- */
+
+.hermes-kanban-md {
+  font-size: 0.85rem;
+  line-height: 1.6;
+  color: var(--color-foreground);
+}
+.hermes-kanban-md p  { margin: 0.25rem 0; }
+.hermes-kanban-md h1,
+.hermes-kanban-md h2,
+.hermes-kanban-md h3,
+.hermes-kanban-md h4 {
+  margin: 0.6rem 0 0.2rem;
+  line-height: 1.25;
+}
+.hermes-kanban-md h1 { font-size: 1.05rem; }
+.hermes-kanban-md h2 { font-size: 0.95rem; }
+.hermes-kanban-md h3 { font-size: 0.88rem; }
+.hermes-kanban-md h4 { font-size: 0.82rem; }
+.hermes-kanban-md ul {
+  margin: 0.25rem 0 0.25rem 1.1rem;
+  padding: 0;
+}
+.hermes-kanban-md li { margin: 0.1rem 0; }
+.hermes-kanban-md a {
+  color: var(--color-ring);
+  text-decoration: underline;
+}
+.hermes-kanban-md code {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 0.8rem;
+  padding: 0.05rem 0.3rem;
+  /* Background is set in the code/pre reset block at the top of this
+   * file with !important, so theme-level global code rules can't knock
+   * out this intentional pill. See #21086. */
+  border-radius: 3px;
+  color: inherit;
+}
+/* Fenced code block. Set a visible background even when --color-foreground
+ * is empty (color-mix falls through to transparent in that case), and force
+ * color: inherit so the text tracks the drawer foreground rather than the
+ * UA default on <code> elements — otherwise themes that don't set
+ * --color-foreground leave code text rendering near-black on dark themes
+ * (see issue #18576). */
+.hermes-kanban pre.hermes-kanban-md-code {
+  margin: 0.35rem 0;
+  padding: 0.5rem 0.6rem;
+  /* Higher specificity (``.hermes-kanban pre.hermes-kanban-md-code`` vs
+   * the reset's ``.hermes-kanban pre``) so this intentional pill wins
+   * over our own ``<pre>`` reset. ``!important`` also needed so theme
+   * rules that drop their own ``code``/``pre`` fill don't knock it out
+   * either. #21086. */
+  background: color-mix(in srgb, currentColor 6%, transparent) !important;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-sm, 0.25rem);
+  overflow-x: auto;
+}
+.hermes-kanban-md-code code {
+  background: transparent;
+  padding: 0;
+  font-size: 0.8rem;
+  white-space: pre;
+  color: inherit;
+}
+.hermes-kanban-md strong { font-weight: 600; }
+
+/* ---- Touch-drag proxy ---------------------------------------------- */
+
+.hermes-kanban-touch-proxy {
+  pointer-events: none;
+  opacity: 0.85;
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.35);
+  transform: scale(1.02);
+  transition: none;
+}
+
+/* ---- Multi-drag ghost ----------------------------------------------- */
+
+.hermes-kanban-drag-ghost {
+  position: fixed;
+  left: -9999px;
+  padding: 0.45rem 0.8rem;
+  background: var(--color-card);
+  border: 2px solid var(--color-ring);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--color-foreground);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.25);
+  pointer-events: none;
+  opacity: 0.95;
+}
+
+/* ---- Staleness tiers ------------------------------------------------ */
+
+.hermes-kanban-card--stale-amber :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 1px #d4b34888 inset;
+}
+.hermes-kanban-card--stale-amber:hover :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 2px #d4b348 inset;
+}
+.hermes-kanban-card--stale-red :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 1px var(--color-destructive, #d14a4a) inset,
+              0 0 8px color-mix(in srgb, var(--color-destructive, #d14a4a) 30%, transparent);
+}
+.hermes-kanban-card--stale-red:hover :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-destructive, #d14a4a) inset,
+              0 0 10px color-mix(in srgb, var(--color-destructive, #d14a4a) 45%, transparent);
+}
+
+/* ---- Worker log pane ------------------------------------------------ */
+
+.hermes-kanban-log {
+  max-height: 360px;
+  overflow: auto;
+  white-space: pre;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+
+/* ---- Run history (per-attempt log in the drawer) ------------------- */
+
+.hermes-kanban-run {
+  border-left: 2px solid var(--color-border);
+  padding: 0.35rem 0.5rem;
+  margin-bottom: 0.4rem;
+  background: color-mix(in srgb, var(--color-foreground) 3%, transparent);
+  border-radius: var(--radius-sm, 0.25rem);
+}
+.hermes-kanban-run--active  { border-left-color: #3fb97d; }
+.hermes-kanban-run--completed { border-left-color: #4a8cd1; }
+.hermes-kanban-run--ended { border-left-color: #6b7280; }  /* generic fallback when outcome is unset */
+.hermes-kanban-run--blocked { border-left-color: var(--color-destructive, #d14a4a); }
+.hermes-kanban-run--crashed,
+.hermes-kanban-run--timed_out,
+.hermes-kanban-run--gave_up,
+.hermes-kanban-run--spawn_failed {
+  border-left-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 6%, transparent);
+}
+.hermes-kanban-run--reclaimed { border-left-color: #d4b348; }
+
+.hermes-kanban-run-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.7rem;
+}
+.hermes-kanban-run-outcome {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  color: var(--color-foreground);
+}
+.hermes-kanban-run-profile {
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-run-elapsed {
+  font-variant-numeric: tabular-nums;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-run-ago {
+  margin-left: auto;
+  color: var(--color-muted-foreground);
+}
+.hermes-kanban-run-summary {
+  font-size: 0.82rem;
+  line-height: 1.5;
+  padding: 0.2rem 0 0;
+  color: var(--color-foreground);
+}
+.hermes-kanban-run-error {
+  font-size: 0.7rem;
+  color: var(--color-destructive, #d14a4a);
+  padding: 0.15rem 0 0;
+  font-family: var(--font-mono, ui-monospace, monospace);
+}
+/* Run metadata is a secondary detail panel. Render it as a clearly-labeled
+ * sub-block with a thin left rule, capped height, and muted treatment so
+ * a verbose JSON blob (e.g. changed_files + URLs from a writer task) does
+ * not visually swamp the parent run row or get mistaken for a crash dump.
+ * Uses a native <details>/<summary> pair so collapse is browser-handled
+ * (zero JS); large blobs default collapsed via the open=false attribute.
+ * See issue #19548. */
+.hermes-kanban-run-meta-block {
+  margin-top: 0.4rem;
+  padding: 0.25rem 0.5rem;
+  border-left: 2px solid var(--color-border);
+  background: transparent;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label {
+  cursor: pointer;
+  list-style: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::-webkit-details-marker {
+  display: none;
+}
+.hermes-kanban-run-meta-block > summary.hermes-kanban-run-meta-label::before {
+  content: "▶ ";
+  display: inline-block;
+  font-size: 0.6rem;
+  margin-right: 0.25rem;
+  transition: transform 120ms ease;
+}
+.hermes-kanban-run-meta-block[open] > summary.hermes-kanban-run-meta-label::before {
+  transform: rotate(90deg);
+}
+.hermes-kanban-run-meta-label {
+  font-size: 0.65rem;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--color-muted-foreground);
+  padding-bottom: 0.15rem;
+}
+.hermes-kanban-run-meta {
+  display: block;
+  max-height: 8.5rem;
+  overflow: auto;
+  font-size: 0.72rem;
+  line-height: 1.5;
+  padding: 0;
+  color: var(--color-muted-foreground);
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-mono, ui-monospace, monospace);
+  background: transparent;
+}
+
+/* -------------------------------------------------------------------------
+   Multi-project: board switcher + create-board dialog
+   ------------------------------------------------------------------------- */
+.hermes-kanban-boardswitcher {
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  border-radius: 0.5rem;
+  padding: 0.6rem 0.85rem;
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.02));
+}
+.hermes-kanban-boardswitcher-inner {
+  display: flex;
+  align-items: flex-end;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-boardswitcher-compact {
+  display: flex;
+  justify-content: flex-end;
+  padding: 0 0.25rem;
+  gap: 0.5rem;
+  align-items: center;
+}
+.hermes-kanban-docs-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  border-radius: 9999px;
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;
+  color: var(--color-muted-foreground, rgba(180, 180, 200, 0.8));
+  background: var(--color-card-subtle, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  text-decoration: none;
+  cursor: help;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+.hermes-kanban-docs-link:hover,
+.hermes-kanban-docs-link:focus-visible {
+  color: var(--color-foreground, #e7e7ee);
+  background: var(--color-card, rgba(255, 255, 255, 0.08));
+  border-color: var(--color-border, rgba(160, 160, 190, 0.45));
+  outline: none;
+}
+.hermes-kanban-dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(8, 10, 16, 0.55);
+  backdrop-filter: blur(2px);
+  z-index: 60;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hermes-kanban-dialog {
+  background: var(--color-card, #121421);
+  color: var(--color-foreground);
+  border: 1px solid var(--color-border, rgba(120, 120, 140, 0.25));
+  border-radius: 0.5rem;
+  padding: 1.1rem 1.2rem 1rem;
+  width: 28rem;
+  max-width: calc(100vw - 2rem);
+  max-height: calc(100vh - 3rem);
+  overflow: auto;
+  box-shadow: 0 18px 40px rgba(0, 0, 0, 0.5);
+}
+.hermes-kanban-dialog-title {
+  font-size: 1rem;
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+.hermes-kanban-dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+/* ---------------------------------------------------------------------- */
+/* Hallucination warnings: per-card badge, events callout, attention      */
+/* strip, recovery popover. Orange/red palette but muted so the board     */
+/* doesn't scream on every render.                                        */
+/* ---------------------------------------------------------------------- */
+.hermes-kanban-warning-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.75rem;
+  color: #ff9e3b;
+  margin-left: 0.25rem;
+  cursor: help;
+}
+
+/* Attention strip — collapsed state is a thin bar. */
+.hermes-kanban-attention {
+  border: 1px solid rgba(255, 158, 59, 0.35);
+  background: rgba(255, 158, 59, 0.06);
+  border-radius: 0.5rem;
+  overflow: hidden;
+}
+.hermes-kanban-attention-bar {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-attention-icon { color: #ff9e3b; font-size: 1rem; }
+.hermes-kanban-attention-text { flex: 1; }
+.hermes-kanban-attention-toggle,
+.hermes-kanban-attention-dismiss,
+.hermes-kanban-attention-row-btn {
+  background: transparent;
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+}
+.hermes-kanban-attention-toggle:hover,
+.hermes-kanban-attention-dismiss:hover,
+.hermes-kanban-attention-row-btn:hover {
+  background: rgba(255, 158, 59, 0.12);
+}
+.hermes-kanban-attention-list {
+  border-top: 1px solid rgba(255, 158, 59, 0.2);
+  padding: 0.25rem 0;
+}
+.hermes-kanban-attention-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.75rem;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-attention-row:hover {
+  background: rgba(255, 158, 59, 0.08);
+}
+.hermes-kanban-attention-row-id {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+  min-width: 7rem;
+}
+.hermes-kanban-attention-row-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.hermes-kanban-attention-row-meta {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+
+/* Events tab — callout style for hallucination events. */
+.hermes-kanban-event--hallucination {
+  border-left: 3px solid #ff6b6b;
+  background: rgba(255, 107, 107, 0.08);
+  padding: 0.5rem 0.65rem;
+  border-radius: 0.35rem;
+  margin: 0.25rem 0;
+}
+.hermes-kanban-event-header,
+.hermes-kanban-event-header-plain {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hermes-kanban-event-warning-icon { color: #ff6b6b; font-size: 1rem; }
+.hermes-kanban-event-warning-label {
+  color: #ff6b6b;
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-event-phantom-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  margin-top: 0.3rem;
+  padding-left: 1.35rem;
+}
+.hermes-kanban-event-phantom-label {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #999);
+}
+.hermes-kanban-event-phantom-chip {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  padding: 0.1rem 0.4rem;
+  background: rgba(255, 107, 107, 0.15);
+  border: 1px solid rgba(255, 107, 107, 0.3);
+  border-radius: 0.3rem;
+}
+
+/* Recovery section header — amber accent when the task has warnings. */
+.hermes-kanban-section-head-warning { color: #ff9e3b; }
+.hermes-kanban-section-head-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+.hermes-kanban-section-toggle {
+  background: transparent;
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  padding: 0.15rem 0.55rem;
+  font-size: 0.75rem;
+  color: inherit;
+  cursor: pointer;
+}
+
+/* Recovery popover body. */
+.hermes-kanban-recovery {
+  border: 1px solid rgba(120, 120, 140, 0.25);
+  background: rgba(255, 158, 59, 0.04);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+}
+.hermes-kanban-recovery-title {
+  font-weight: 600;
+  font-size: 0.8125rem;
+}
+.hermes-kanban-recovery-hint {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+  line-height: 1.35;
+}
+.hermes-kanban-recovery-section {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.hermes-kanban-recovery-label {
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+.hermes-kanban-recovery-input,
+.hermes-kanban-recovery-select {
+  padding: 0.25rem 0.4rem;
+  font-size: 0.8125rem;
+  background: rgba(0, 0, 0, 0.15);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  color: inherit;
+  outline: none;
+}
+.hermes-kanban-recovery-action-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-recovery-action-label {
+  font-size: 0.8125rem;
+  font-weight: 600;
+  min-width: 8rem;
+}
+.hermes-kanban-recovery-action-desc {
+  flex: 1;
+  font-size: 0.75rem;
+  color: var(--color-muted-foreground, #888);
+}
+.hermes-kanban-recovery-btn {
+  padding: 0.25rem 0.7rem;
+  font-size: 0.75rem;
+  background: rgba(255, 158, 59, 0.15);
+  border: 1px solid rgba(255, 158, 59, 0.4);
+  border-radius: 0.3rem;
+  color: inherit;
+  cursor: pointer;
+}
+.hermes-kanban-recovery-btn:hover:not(:disabled) {
+  background: rgba(255, 158, 59, 0.25);
+}
+.hermes-kanban-recovery-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.hermes-kanban-recovery-reassign-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-recovery-checkbox {
+  font-size: 0.75rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+}
+.hermes-kanban-recovery-cmd-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-recovery-cmd {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+  font-size: 0.75rem;
+  padding: 0.2rem 0.5rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  flex: 1;
+  min-width: 10rem;
+  overflow-x: auto;
+  white-space: nowrap;
+}
+.hermes-kanban-recovery-msg {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.3rem;
+}
+.hermes-kanban-recovery-msg--ok {
+  background: rgba(120, 200, 120, 0.12);
+  color: #6bc46b;
+  border: 1px solid rgba(120, 200, 120, 0.3);
+}
+.hermes-kanban-recovery-msg--err {
+  background: rgba(255, 107, 107, 0.12);
+  color: #ff8b8b;
+  border: 1px solid rgba(255, 107, 107, 0.3);
+}
+
+/* ---------------------------------------------------------------------- */
+/* Diagnostics — generic, severity-coloured distress signals on tasks.    */
+/* Three rungs: warning (amber), error (orange), critical (red).          */
+/* ---------------------------------------------------------------------- */
+
+/* Severity token variables so every diagnostic-coloured surface uses the */
+/* same palette. */
+.hermes-kanban-diag,
+.hermes-kanban-attention,
+.hermes-kanban-warning-badge,
+.hermes-kanban-attention-row {
+  --hermes-diag-warning: #ff9e3b;
+  --hermes-diag-error:   #ff6b3d;
+  --hermes-diag-critical: #ff4d4d;
+}
+
+/* Warning-badge severity variants (overrides the base colour). */
+.hermes-kanban-warning-badge--warning { color: var(--hermes-diag-warning); }
+.hermes-kanban-warning-badge--error   { color: var(--hermes-diag-error); font-weight: 700; }
+.hermes-kanban-warning-badge--critical { color: var(--hermes-diag-critical); font-weight: 700; }
+
+/* Attention-strip severity variants. */
+.hermes-kanban-attention--warning {
+  border-color: rgba(255, 158, 59, 0.35);
+  background: rgba(255, 158, 59, 0.06);
+}
+.hermes-kanban-attention--error {
+  border-color: rgba(255, 107, 61, 0.45);
+  background: rgba(255, 107, 61, 0.08);
+}
+.hermes-kanban-attention--critical {
+  border-color: rgba(255, 77, 77, 0.55);
+  background: rgba(255, 77, 77, 0.10);
+}
+.hermes-kanban-attention--error .hermes-kanban-attention-icon { color: var(--hermes-diag-error); }
+.hermes-kanban-attention--critical .hermes-kanban-attention-icon { color: var(--hermes-diag-critical); }
+
+/* Per-row severity marker in the expanded attention list. */
+.hermes-kanban-attention-row-sev {
+  display: inline-block;
+  min-width: 1.5rem;
+  font-weight: 600;
+}
+.hermes-kanban-attention-row--warning .hermes-kanban-attention-row-sev { color: var(--hermes-diag-warning); }
+.hermes-kanban-attention-row--error    .hermes-kanban-attention-row-sev { color: var(--hermes-diag-error); font-weight: 700; }
+.hermes-kanban-attention-row--critical .hermes-kanban-attention-row-sev { color: var(--hermes-diag-critical); font-weight: 700; }
+
+/* Individual diagnostic card inside the drawer's Diagnostics section. */
+.hermes-kanban-diag-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+.hermes-kanban-diag {
+  border-left: 3px solid var(--hermes-diag-warning);
+  background: rgba(255, 158, 59, 0.05);
+  border-radius: 0.35rem;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+.hermes-kanban-diag--error {
+  border-left-color: var(--hermes-diag-error);
+  background: rgba(255, 107, 61, 0.06);
+}
+.hermes-kanban-diag--critical {
+  border-left-color: var(--hermes-diag-critical);
+  background: rgba(255, 77, 77, 0.07);
+}
+.hermes-kanban-diag-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+.hermes-kanban-diag-sev {
+  font-weight: 700;
+  min-width: 1.5rem;
+}
+.hermes-kanban-diag--warning .hermes-kanban-diag-sev { color: var(--hermes-diag-warning); }
+.hermes-kanban-diag--error    .hermes-kanban-diag-sev { color: var(--hermes-diag-error); }
+.hermes-kanban-diag--critical .hermes-kanban-diag-sev { color: var(--hermes-diag-critical); }
+.hermes-kanban-diag-title {
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+.hermes-kanban-diag-detail {
+  font-size: 0.8125rem;
+  color: var(--color-foreground, #ccc);
+  line-height: 1.4;
+}
+.hermes-kanban-diag-data {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.75rem;
+}
+.hermes-kanban-diag-data-row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+.hermes-kanban-diag-data-key {
+  color: var(--color-muted-foreground, #888);
+  font-weight: 500;
+}
+.hermes-kanban-diag-data-val {
+  font-family: ui-monospace, SFMono-Regular, monospace;
+}
+.hermes-kanban-diag-reassign-row {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.75rem;
+}
+.hermes-kanban-diag-reassign-label {
+  color: var(--color-muted-foreground, #888);
+}
+.hermes-kanban-diag-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin-top: 0.1rem;
+}
+.hermes-kanban-diag-action-btn {
+  padding: 0.25rem 0.6rem;
+  font-size: 0.75rem;
+  background: rgba(0, 0, 0, 0.2);
+  border: 1px solid rgba(120, 120, 140, 0.3);
+  border-radius: 0.3rem;
+  color: inherit;
+  cursor: pointer;
+  text-decoration: none;
+}
+.hermes-kanban-diag-action-btn:hover:not(:disabled) {
+  background: rgba(0, 0, 0, 0.3);
+}
+.hermes-kanban-diag-action-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.hermes-kanban-diag-action-btn--suggested {
+  background: rgba(255, 158, 59, 0.15);
+  border-color: rgba(255, 158, 59, 0.4);
+  font-weight: 600;
+}
+.hermes-kanban-diag-action-btn--suggested:hover:not(:disabled) {
+  background: rgba(255, 158, 59, 0.25);
+}
+.hermes-kanban-diag-action-btn--unknown {
+  opacity: 0.6;
+  cursor: default;
+}
+.hermes-kanban-diag-msg {
+  font-size: 0.75rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 0.3rem;
+}
+.hermes-kanban-diag-msg--ok {
+  background: rgba(120, 200, 120, 0.12);
+  color: #6bc46b;
+  border: 1px solid rgba(120, 200, 120, 0.3);
+}
+.hermes-kanban-diag-msg--err {
+  background: rgba(255, 107, 61, 0.12);
+  color: #ff8b6b;
+  border: 1px solid rgba(255, 107, 61, 0.3);
+}
+/* ---- Partial failure highlight --------------------------------------- */
+.hermes-kanban-card--failed :where(.hermes-kanban-card-content) {
+  box-shadow: 0 0 0 2px var(--color-destructive, #d14a4a) inset,
+              0 0 8px color-mix(in srgb, var(--color-destructive, #d14a4a) 30%, transparent);
+}
+
+/* ---- Larger checkbox hit target -------------------------------------- */
+.hermes-kanban-card-check-wrap {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  margin: -0.3rem;
+  cursor: pointer;
+}
+.hermes-kanban-card-check {
+  width: 0.95rem;
+  height: 0.95rem;
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Column select-all checkbox -------------------------------------- */
+.hermes-kanban-col-check {
+  width: 0.9rem;
+  height: 0.9rem;
+  margin: 0 0.15rem 0 0;
+  cursor: pointer;
+  accent-color: var(--color-ring);
+}
+
+/* ---- Bulk action bar extras ------------------------------------------ */
+.hermes-kanban-bulk-priority {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding-left: 0.5rem;
+  border-left: 1px solid color-mix(in srgb, var(--color-border) 70%, transparent);
+}
+.hermes-kanban-bulk-reclaim-first {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  cursor: pointer;
+}
+
+/* ---- Trash drop zone ------------------------------------------------- */
+
+.hermes-kanban-trash {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.35rem;
+  padding: 0.75rem 0.5rem;
+  border: 2px dashed var(--color-border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--color-card) 85%, transparent);
+  color: var(--color-muted-foreground);
+  font-size: 0.75rem;
+  min-height: 80px;
+  opacity: 0.5;
+  transition: opacity 120ms ease, border-color 120ms ease, background-color 120ms ease;
+  user-select: none;
+  pointer-events: none;
+}
+
+.hermes-kanban-trash--active {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.hermes-kanban-trash--drop {
+  border-color: var(--color-destructive, #d14a4a);
+  background: color-mix(in srgb, var(--color-destructive, #d14a4a) 8%, var(--color-card));
+  color: var(--color-destructive, #d14a4a);
+}
+
+.hermes-kanban-trash-icon {
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.hermes-kanban-trash-label {
+  font-weight: 500;
+}
+
+/* PMO-DASHBOARD-EXTENSION:START */
+.pmo-shell {
+  --pmo-surface: var(--color-card, #fff);
+  --pmo-surface-muted: var(--color-muted, #f3f5f8);
+  /* The host bridge always exposes --midground, while older dashboard
+     builds may omit --color-foreground.  Falling back to a fixed light-theme
+     ink made PM data nearly invisible in dark themes. */
+  --pmo-text: var(--color-foreground, var(--midground, currentColor));
+  --pmo-muted: var(--color-muted-foreground, #515b6c);
+  --pmo-border: var(--color-border, #9aa4b2);
+  --pmo-brand: var(--color-primary, #315efb);
+  color: var(--pmo-text);
+  display: flex;
+  flex-direction: column;
+  gap: .75rem;
+  min-width: 0;
+}
+.pmo-header, .pmo-heading-row, .pmo-actions, .pmo-inline-form, .pmo-check {
+  align-items: center;
+  display: flex;
+  gap: .65rem;
+}
+.pmo-header, .pmo-heading-row { justify-content: space-between; }
+.pmo-project-picker { align-items: center; display: inline-flex; gap: .35rem; }
+.pmo-project-picker span { color: var(--pmo-muted); font-size: .72rem; font-weight: 650; text-transform: uppercase; }
+.pmo-project-picker select { background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .4rem; color: var(--pmo-text); min-height: 36px; max-width: 260px; padding: .45rem .6rem; }
+.pmo-project-context { align-items: center; background: color-mix(in srgb, var(--pmo-surface) 88%, var(--pmo-accent) 12%); border: 1px solid var(--pmo-border); border-radius: .55rem; display: flex; gap: .65rem; margin-bottom: 1rem; padding: .5rem .7rem; }
+.pmo-project-context__label { font-size: .72rem; font-weight: 750; letter-spacing: .05em; text-transform: uppercase; }
+.pmo-project-context__hint { color: var(--pmo-muted); font-size: .78rem; margin-left: auto; }
+.pmo-header h1, .pmo-view h2, .pmo-panel h3 { margin: 0; }
+.pmo-header p, .pmo-muted { color: var(--pmo-muted); margin: .2rem 0 0; }
+.pmo-nav { display: flex; flex-wrap: wrap; gap: .25rem; overflow-x: visible; padding-block-end: .35rem; }
+.pmo-nav button, .pmo-thread-list button, .pmo-link-button {
+  background: transparent; border: 1px solid transparent; border-radius: .4rem;
+  color: var(--pmo-muted); cursor: pointer; min-height: 36px; padding: .4rem .65rem;
+  white-space: nowrap;
+}
+.pmo-nav button[aria-current="page"], .pmo-thread-list button[aria-current="page"] {
+  background: var(--pmo-surface-muted); border-color: var(--pmo-border); color: var(--pmo-text); font-weight: 650;
+}
+.pmo-content { min-width: 0; }
+.pmo-view { display: flex; flex-direction: column; gap: 1rem; }
+.pmo-metrics { display: grid; gap: .5rem; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); }
+.pmo-metric, .pmo-panel {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .5rem;
+}
+.pmo-metric { display: flex; flex-direction: column; padding: .7rem .8rem; }
+.pmo-metric__value { font-size: 1.2rem; font-weight: 700; }
+.pmo-metric__label { color: var(--pmo-muted); font-size: .75rem; }
+.pmo-table-wrap { border: 1px solid var(--pmo-border); border-radius: .5rem; overflow-x: auto; }
+.pmo-table { border-collapse: collapse; min-width: 760px; width: 100%; }
+.pmo-table th, .pmo-table td { border-block-end: 1px solid var(--pmo-border); padding: .55rem .7rem; text-align: start; }
+.pmo-table thead th { background: var(--pmo-surface-muted); color: var(--pmo-muted); font-size: .72rem; text-transform: uppercase; }
+.pmo-link-button { color: var(--pmo-brand); padding: .2rem; text-align: start; }
+.pmo-status { border: 1px solid var(--pmo-border); border-radius: 999px; display: inline-block; font-size: .72rem; padding: .1rem .45rem; }
+.pmo-grid { display: grid; gap: .75rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pmo-panel { padding: .8rem; }
+.pmo-panel--wide { grid-column: 1 / -1; }
+.pmo-panel--attention { border-inline-start: 4px solid var(--color-destructive, #b42318); }
+.pmo-row, .pmo-attention { align-items: start; display: flex; gap: .65rem; justify-content: space-between; padding-block: .4rem; }
+.pmo-row + .pmo-row { border-block-start: 1px solid var(--pmo-border); }
+.pmo-activity-panel { display: flex; flex-direction: column; gap: .65rem; }
+.pmo-activity-panel__heading, .pmo-activity-pagination { align-items: center; display: flex; gap: .55rem; justify-content: space-between; }
+.pmo-activity-controls { display: grid; gap: .45rem; grid-template-columns: minmax(0, 1fr) auto; }
+.pmo-activity-controls input, .pmo-activity-controls select { background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border); border-radius: .4rem; color: var(--pmo-text); min-height: 34px; padding: .35rem .5rem; }
+.pmo-activity-row { border-block-start: 1px solid var(--pmo-border); display: grid; gap: .12rem .6rem; grid-template-columns: minmax(0, 1fr) auto; padding-block: .55rem; }
+.pmo-activity-row strong, .pmo-activity-row__link { min-width: 0; }
+.pmo-activity-row__link { color: var(--pmo-text); font-weight: 700; text-decoration: none; }
+.pmo-activity-row__link:hover { color: var(--pmo-brand); text-decoration: underline; text-underline-offset: .15em; }
+.pmo-activity-row__link:focus-visible { border-radius: .2rem; outline: 2px solid var(--pmo-brand); outline-offset: 2px; }
+.pmo-activity-row span, .pmo-activity-row time { color: var(--pmo-muted); font-size: .78rem; }
+.pmo-activity-row span { grid-column: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-activity-row time { grid-column: 2; grid-row: 1 / span 2; white-space: nowrap; }
+.pmo-spend-model-stats { align-items: flex-end; display: flex; flex-wrap: wrap; gap: .45rem .8rem; justify-content: flex-end; text-align: right; }
+.pmo-spend-model-stats span { color: var(--pmo-muted); font-size: .82rem; }
+.pmo-attention { background: transparent; border: 0; color: inherit; cursor: pointer; text-align: start; width: 100%; }
+.pmo-thread-layout { display: grid; gap: .75rem; grid-template-columns: minmax(220px, 292px) minmax(0, 1fr); }
+.pmo-thread-list { display: flex; flex-direction: column; gap: .25rem; }
+.pmo-thread, .pmo-messages { min-width: 0; }
+.pmo-admin-folder-button {
+  align-items: center; border: 0; color: var(--pmo-text); display: grid; gap: .45rem;
+  grid-template-columns: 14px minmax(0, 1fr) auto; min-height: 38px; overflow: hidden;
+  padding: .35rem .45rem; text-align: start; width: 100%;
+}
+.pmo-admin-folder-button:hover, .pmo-admin-folder-button[aria-current="page"] {
+  background: var(--pmo-surface-muted); color: var(--pmo-text);
+}
+.pmo-admin-folder-button[aria-current="page"] { box-shadow: inset 2px 0 0 var(--pmo-brand); }
+.pmo-admin-folder-button__icon { color: var(--pmo-brand); font-size: .75rem; text-align: center; }
+.pmo-admin-folder-button__name { font-weight: 650; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-admin-folder-button__role {
+  border: 1px solid var(--pmo-border); border-radius: 999px; color: var(--pmo-muted);
+  font-size: .6rem; padding: .09rem .34rem; text-transform: capitalize; white-space: nowrap;
+}
+
+/* Administration mirrors Founder’s Office: the conversation is the working
+   surface, while high-impact controls remain contextual in a compact rail. */
+.pmo-admin-thread {
+  display: grid; gap: .75rem; grid-template-areas:
+    "header header"
+    "messages tools"
+    "composer tools"
+    "feedback tools";
+  grid-template-columns: minmax(0, 1fr) minmax(255px, 330px);
+  grid-template-rows: auto minmax(220px, 35vh) auto auto;
+}
+.pmo-admin-thread > .pmo-thread-header { grid-area: header; }
+.pmo-admin-thread > .pmo-admin-tools {
+  align-content: start; display: flex; flex-direction: column; gap: .75rem; grid-area: tools;
+  max-height: 68vh; min-width: 0; overflow: auto; padding-inline-end: .1rem;
+}
+.pmo-admin-thread > .pmo-admin-tools .pmo-panel { display: flex; flex-direction: column; gap: .65rem; }
+.pmo-admin-thread > .pmo-admin-tools .pmo-actions { flex-wrap: wrap; margin-top: auto; }
+.pmo-admin-thread > .pmo-messages { grid-area: messages; max-height: none; min-height: 330px; }
+.pmo-admin-thread > .pmo-messages--empty { min-height: 190px; }
+.pmo-admin-thread > .pmo-composer { grid-area: composer; margin: 0; }
+.pmo-admin-thread > .pmo-state { grid-area: feedback; min-height: 0; padding: 0; }
+
+/* Founder's Office uses the same project-folder mental model as Codex chat:
+   global first, then one expandable folder per project. */
+.pmo-chat-view { min-height: min(720px, calc(100vh - 190px)); }
+.pmo-chat-heading { align-items: start; display: flex; gap: 1rem; justify-content: space-between; }
+.pmo-chat-sidebar {
+  align-self: start; background: color-mix(in srgb, var(--pmo-surface-muted) 64%, var(--pmo-surface));
+  border: 1px solid var(--pmo-border); border-radius: .55rem; max-height: 68vh;
+  min-width: 0; overflow: auto; padding: .35rem;
+}
+.pmo-chat-sidebar__title {
+  align-items: center; color: var(--pmo-muted); display: flex; font-size: .68rem;
+  font-weight: 700; justify-content: space-between; letter-spacing: .06em;
+  padding: .35rem .45rem .5rem; text-transform: uppercase;
+}
+.pmo-chat-sidebar__title span { font-variant-numeric: tabular-nums; }
+.pmo-admin-empty {
+  align-items: flex-start; align-self: stretch; border: 1px dashed var(--pmo-border); border-radius: .5rem;
+  display: grid; gap: .25rem .65rem; grid-template-columns: 26px minmax(0, 1fr); margin: .4rem 0;
+  padding: .85rem;
+}
+.pmo-admin-empty__icon {
+  align-items: center; background: color-mix(in srgb, var(--pmo-brand) 12%, var(--pmo-surface)); border-radius: .42rem;
+  color: var(--pmo-brand); display: inline-flex; font-size: .58rem; font-weight: 800; height: 26px; justify-content: center; letter-spacing: .03em; width: 26px;
+}
+.pmo-admin-empty strong { font-size: .86rem; }
+.pmo-admin-empty p { color: var(--pmo-muted); font-size: .76rem; line-height: 1.45; margin: .14rem 0 .55rem; }
+.pmo-admin-empty > .pmo-actions { grid-column: 2; margin: 0; }
+.pmo-chat-folder + .pmo-chat-folder { border-top: 1px solid color-mix(in srgb, var(--pmo-border) 72%, transparent); margin-top: .25rem; padding-top: .25rem; }
+.pmo-chat-folder__head { align-items: center; display: grid; gap: .15rem; grid-template-columns: minmax(0, 1fr) 30px; }
+.pmo-thread-list .pmo-chat-folder__toggle {
+  align-items: center; border: 0; color: var(--pmo-text); display: grid;
+  font-weight: 650; gap: .35rem; grid-template-columns: 12px minmax(0, 1fr) auto;
+  min-height: 34px; overflow: hidden; padding: .3rem .4rem; text-align: start;
+}
+.pmo-chat-folder__toggle > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+.pmo-chat-folder__toggle small { color: var(--pmo-muted); font-size: .62rem; font-weight: 500; overflow: hidden; text-overflow: ellipsis; }
+.pmo-thread-list .pmo-chat-folder__add {
+  align-items: center; border: 0; display: inline-flex; font-size: 1.05rem;
+  justify-content: center; min-height: 30px; padding: 0; width: 30px;
+}
+.pmo-chat-folder__toggle:hover, .pmo-chat-folder__add:hover { background: var(--pmo-surface-muted); color: var(--pmo-text); }
+.pmo-chat-folder__body { display: flex; flex-direction: column; gap: .1rem; padding: 0 0 .2rem 1rem; }
+.pmo-thread-list .pmo-chat-thread-button {
+  align-items: center; display: grid; gap: .4rem; grid-template-columns: 14px minmax(0, 1fr) auto;
+  min-height: 34px; overflow: hidden; padding: .3rem .45rem; text-align: start; width: 100%;
+}
+.pmo-chat-thread-button > span:nth-child(2) { overflow: hidden; text-overflow: ellipsis; }
+.pmo-chat-thread-button b { align-items: center; background: var(--pmo-brand); border-radius: 999px; color: var(--pmo-surface); display: inline-flex; font-size: .62rem; justify-content: center; min-width: 1rem; padding: .05rem .25rem; }
+.pmo-new-conversation { display: flex; flex-direction: column; gap: .35rem; padding: .35rem .25rem .5rem; }
+.pmo-new-conversation input {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .35rem;
+  color: var(--pmo-text); min-height: 34px; padding: .35rem .45rem; width: 100%;
+}
+.pmo-new-conversation > div { display: flex; gap: .3rem; }
+.pmo-thread { border: 1px solid var(--pmo-border); border-radius: .55rem; display: flex; flex-direction: column; min-height: 480px; padding: .75rem; }
+/* This follows the generic thread rule deliberately.  The administration view
+   is a conversation with a contextual control rail, not a long settings form
+   placed before the chat. */
+.pmo-thread.pmo-admin-thread { display: grid; }
+.pmo-thread-header { border-bottom: 1px solid var(--pmo-border); margin: -.15rem 0 .35rem; padding: 0 .1rem .55rem; }
+.pmo-thread-tag--global { border-color: color-mix(in srgb, var(--pmo-brand) 60%, var(--pmo-border)); color: var(--pmo-brand); }
+.pmo-participants { display: flex; flex-wrap: wrap; gap: .25rem; }
+.pmo-participant {
+  align-items: center; background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border);
+  border-radius: 999px; color: var(--pmo-muted); display: inline-flex; font-size: .68rem;
+  gap: .25rem; max-width: 190px; padding: .12rem .4rem;
+}
+.pmo-participant small { font-size: .56rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.pmo-participant--agent { border-color: color-mix(in srgb, var(--pmo-brand) 52%, var(--pmo-border)); color: var(--pmo-brand); }
+.pmo-agent-activity {
+  align-self: stretch; background: transparent; border: 0; border-radius: 0; display: grid;
+  gap: .45rem; grid-template-columns: 18px minmax(0, 1fr); margin: .35rem 2.85rem; padding: .15rem 0;
+}
+.pmo-agent-activity__icon { color: var(--pmo-brand); font-size: .72rem; padding-top: .1rem; }
+.pmo-agent-activity__head { align-items: center; display: flex; flex-wrap: wrap; gap: .4rem; }
+.pmo-agent-activity__head strong { color: var(--pmo-muted); font-size: .75rem; }
+.pmo-agent-activity__head code { background: transparent; color: var(--pmo-brand); font-size: .7rem; padding: 0; }
+.pmo-agent-activity__main { min-width: 0; }
+.pmo-agent-activity.is-live { border-inline-start: 2px solid color-mix(in srgb, var(--pmo-brand) 74%, transparent); padding-inline-start: .55rem; }
+.pmo-agent-activity.is-live .pmo-agent-activity__icon { animation: pmo-live-ring 1.2s ease-out infinite; border-radius: 50%; }
+.pmo-agent-activity__live { align-items: center; color: var(--pmo-brand); display: inline-flex; font-size: .62rem; font-weight: 800; gap: .18rem; letter-spacing: .04em; text-transform: uppercase; }
+.pmo-agent-activity__live i { animation: pmo-live-dots .9s ease-in-out infinite; background: currentColor; border-radius: 50%; display: block; height: .23rem; width: .23rem; }
+.pmo-agent-activity__live i:nth-child(2) { animation-delay: .14s; }
+.pmo-agent-activity__live i:nth-child(3) { animation-delay: .28s; }
+@keyframes pmo-live-dots { 50% { opacity: .28; transform: translateY(-.14rem); } }
+@keyframes pmo-live-ring { 60% { box-shadow: 0 0 0 .34rem color-mix(in srgb, var(--pmo-brand) 0%, transparent); } 100% { box-shadow: 0 0 0 0 transparent; } }
+@media (prefers-reduced-motion: reduce) { .pmo-agent-activity.is-live .pmo-agent-activity__icon, .pmo-agent-activity__live i { animation: none; } }
+.pmo-agent-status { color: var(--pmo-muted); font-size: .6rem; padding: 0; text-transform: capitalize; }
+.pmo-thinking-toggle { background: transparent; border: 0; color: var(--pmo-brand); cursor: pointer; font: inherit; font-size: .67rem; padding: 0; text-decoration: underline; text-underline-offset: .15em; }
+.pmo-thinking-toggle:hover { color: var(--pmo-text); }
+.pmo-thinking-toggle:focus-visible { border-radius: .2rem; outline: 2px solid var(--pmo-brand); outline-offset: 2px; }
+.pmo-agent-status--completed, .pmo-agent-status--success { color: var(--color-success, #3fa66a); }
+.pmo-agent-status--failed, .pmo-agent-status--error { color: var(--color-destructive, #d14a4a); }
+.pmo-agent-activity__detail { color: var(--pmo-muted); font: inherit; font-size: .72rem; margin: .25rem 0 0; max-height: 8rem; overflow: auto; white-space: pre-wrap; }
+.pmo-action-previews { display: flex; flex-wrap: wrap; gap: .3rem; margin-top: .35rem; }
+.pmo-action-preview { align-items: center; border: 1px solid var(--pmo-border); border-radius: .35rem; display: inline-flex; flex-wrap: wrap; font-size: .68rem; gap: .35rem; max-width: 100%; padding: .22rem .4rem; }
+.pmo-action-preview--skill { border-color: color-mix(in srgb, var(--pmo-brand) 45%, var(--pmo-border)); }
+.pmo-action-preview__label { color: var(--pmo-brand); font-weight: 700; }
+.pmo-action-preview__detail { color: var(--pmo-muted); max-width: 26rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-ticket-link { color: var(--pmo-brand); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; text-decoration: underline; text-underline-offset: .13em; }
+.pmo-ticket-link:focus-visible { border-radius: .2rem; outline: 2px solid var(--pmo-brand); outline-offset: 2px; }
+.pmo-agent-waiting { align-items: center; color: var(--pmo-muted); display: flex; font-size: .75rem; gap: .45rem; padding: .35rem 2.75rem; }
+.pmo-agent-waiting span { animation: pmo-agent-pulse 1.1s ease-in-out infinite; background: var(--pmo-brand); border-radius: 50%; height: .45rem; width: .45rem; }
+@keyframes pmo-agent-pulse { 50% { opacity: .25; transform: scale(.75); } }
+
+/* Specialist work is a child run, not a sequence of parent-chat messages.
+   The compact surface mirrors an agent delegation row; its execution trace is
+   available only after expansion so the Founder's Office remains readable. */
+.pmo-subchat {
+  align-self: stretch; background: color-mix(in srgb, var(--pmo-surface-muted) 48%, transparent);
+  border: 1px solid color-mix(in srgb, var(--pmo-border) 82%, var(--pmo-brand));
+  border-radius: .65rem; flex: 0 0 auto; margin: .45rem 2.85rem; overflow: hidden;
+}
+.pmo-subchat__toggle {
+  align-items: center; background: transparent; border: 0; color: var(--pmo-text);
+  cursor: pointer; display: grid; gap: .65rem; grid-template-columns: 32px minmax(0, 1fr) auto 14px;
+  min-height: 64px; padding: .65rem .75rem; text-align: start; width: 100%;
+}
+.pmo-subchat__toggle::-webkit-details-marker { display: none; }
+.pmo-subchat__toggle::marker { content: ""; }
+.pmo-subchat__toggle:hover { background: color-mix(in srgb, var(--pmo-brand) 7%, transparent); }
+.pmo-subchat__toggle:focus-visible { outline: 2px solid var(--pmo-brand); outline-offset: -2px; }
+.pmo-subchat__avatar {
+  align-items: center; align-self: start; background: color-mix(in srgb, var(--pmo-brand) 23%, var(--pmo-surface));
+  border: 1px solid color-mix(in srgb, var(--pmo-brand) 58%, var(--pmo-border)); border-radius: .45rem;
+  color: var(--pmo-brand); display: inline-flex; font-size: .62rem; font-weight: 800;
+  height: 32px; justify-content: center; letter-spacing: .05em; width: 32px;
+}
+.pmo-subchat__summary { display: flex; flex-direction: column; gap: .16rem; min-width: 0; }
+.pmo-subchat__eyebrow { align-items: center; display: flex; flex-wrap: wrap; gap: .45rem; }
+.pmo-subchat__eyebrow strong { color: var(--pmo-text); font-size: .77rem; }
+.pmo-subchat__eyebrow span { color: var(--pmo-muted); font-size: .66rem; }
+.pmo-subchat__question {
+  color: var(--pmo-text); font-size: .78rem; line-height: 1.35; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.pmo-subchat__meta { color: var(--pmo-muted); font-size: .64rem; }
+.pmo-subchat__state {
+  border: 1px solid var(--pmo-border); border-radius: 999px; color: var(--pmo-muted);
+  font-size: .6rem; font-weight: 700; letter-spacing: .04em; padding: .13rem .4rem; text-transform: uppercase;
+}
+.pmo-subchat__state--completed { border-color: color-mix(in srgb, var(--color-success, #3fa66a) 55%, var(--pmo-border)); color: var(--color-success, #3fa66a); }
+.pmo-subchat__state--working { border-color: color-mix(in srgb, var(--pmo-brand) 62%, var(--pmo-border)); color: var(--pmo-brand); }
+.pmo-subchat__chevron { color: var(--pmo-muted); font-size: 1rem; text-align: center; }
+.pmo-subchat.is-open .pmo-subchat__chevron { transform: rotate(90deg); }
+.pmo-subchat__detail {
+  border-top: 1px solid var(--pmo-border); display: flex; flex-direction: column;
+  gap: .25rem; padding: .55rem .75rem .75rem 3.95rem;
+}
+.pmo-subchat__delegation { align-items: flex-start; color: var(--pmo-muted); display: grid; font-size: .68rem; gap: .5rem; grid-template-columns: 14px minmax(0, 1fr); padding: .2rem 0 .4rem; }
+.pmo-subchat__delegation strong { color: var(--pmo-text); font-size: .7rem; }
+.pmo-subchat__delegation p { margin: .12rem 0 0; }
+.pmo-subchat__timeline { border-left: 1px solid var(--pmo-border); margin-left: .4rem; padding-left: .65rem; }
+.pmo-subchat__timeline .pmo-agent-activity { margin: .25rem 0; }
+.pmo-subchat__timeline .pmo-agent-activity__detail { max-height: 14rem; }
+.pmo-subchat__waiting { align-items: center; color: var(--pmo-muted); display: flex; font-size: .7rem; gap: .4rem; padding: .55rem 0; }
+.pmo-subchat__waiting > span { animation: pmo-agent-pulse 1.1s ease-in-out infinite; background: var(--pmo-brand); border-radius: 50%; height: .42rem; width: .42rem; }
+.pmo-subchat__result {
+  background: var(--pmo-surface); border: 1px solid color-mix(in srgb, var(--color-success, #3fa66a) 40%, var(--pmo-border));
+  border-radius: .5rem; margin-top: .35rem; max-height: 28rem; overflow: auto; padding: .6rem .7rem;
+}
+.pmo-subchat__result-head { align-items: center; color: var(--color-success, #3fa66a); display: flex; font-size: .72rem; gap: .4rem; margin-bottom: .4rem; }
+.pmo-subchat__result .hermes-kanban-md { font-size: .76rem; line-height: 1.45; }
+
+/* ── Group chat ───────────────────────────────────────────────────────────
+ * Every message used to render as an identical full-width slab with the raw
+ * storage principal as its name, so a five-person conversation read as a log
+ * file. The rules below give each speaker a stable identity, cap the line
+ * length so long messages stay readable, and group consecutive turns.
+ * Everything resolves through --pmo-* tokens so it follows the active Hermes
+ * theme rather than pinning one palette. */
+.pmo-messages {
+  display: flex; flex-direction: column; gap: .15rem;
+  max-height: 56vh; overflow-y: auto; overscroll-behavior: contain;
+  padding: .5rem .25rem .75rem; scroll-behavior: smooth;
+}
+.pmo-message {
+  display: grid; grid-template-columns: 32px minmax(0, 1fr);
+  gap: .1rem .6rem; padding: .35rem .25rem;
+  grid-template-areas: "avatar head" "avatar body";
+}
+/* A run of turns from one speaker keeps a single header. */
+.pmo-message--grouped { padding-block-start: 0; grid-template-areas: "avatar body"; }
+.pmo-message--grouped .pmo-message__avatar { visibility: hidden; height: 0; }
+
+.pmo-message__avatar {
+  grid-area: avatar; align-self: start;
+  width: 32px; height: 32px; border-radius: 50%;
+  display: flex; align-items: center; justify-content: center;
+  font-size: .7rem; font-weight: 700; letter-spacing: .02em;
+  text-transform: uppercase; user-select: none;
+  background: var(--pmo-avatar-bg, var(--pmo-surface-muted));
+  color: var(--pmo-avatar-fg, var(--pmo-text));
+  border: 1px solid var(--pmo-avatar-bd, var(--pmo-border));
+}
+.pmo-message__head {
+  grid-area: head; display: flex; align-items: baseline;
+  flex-wrap: wrap; gap: .4rem; margin-block-end: .1rem;
+}
+.pmo-message__author { font-size: .82rem; font-weight: 650; color: var(--pmo-text); }
+.pmo-message__badge {
+  font-size: .62rem; font-weight: 700; letter-spacing: .05em; text-transform: uppercase;
+  padding: .05rem .3rem; border-radius: 999px; white-space: nowrap;
+  border: 1px solid var(--pmo-border); color: var(--pmo-muted);
+}
+.pmo-message__badge--agent { border-color: var(--pmo-brand); color: var(--pmo-brand); }
+.pmo-message__badge--you { border-color: var(--pmo-brand); color: var(--pmo-brand); }
+.pmo-message__time { font-size: .7rem; color: var(--pmo-muted); }
+.pmo-message__body {
+  grid-area: body; max-width: 68ch; min-width: 0;
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border);
+  border-radius: .1rem .55rem .55rem .55rem;
+  padding: .45rem .65rem; overflow-wrap: anywhere; white-space: pre-wrap;
+  line-height: 1.45;
+}
+.pmo-message__body .hermes-kanban-md { max-width: 100%; min-width: 0; }
+.pmo-message__body .hermes-kanban-md code:not(.hermes-kanban-md-code *) {
+  background: #12302b !important;
+  color: #fff4dc !important;
+  -webkit-text-fill-color: #fff4dc !important;
+  overflow-wrap: anywhere;
+}
+.pmo-message__body pre.hermes-kanban-md-code {
+  background: #12302b !important;
+  border-color: #315f55;
+  color: #fff4dc !important;
+  -webkit-text-fill-color: #fff4dc !important;
+  max-width: 100%;
+}
+.pmo-message__body pre.hermes-kanban-md-code code {
+  color: #fff4dc !important;
+  -webkit-text-fill-color: #fff4dc !important;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.pmo-message--grouped .pmo-message__body { border-radius: .55rem; }
+/* The signed-in user's own turns, so you can find yourself while scanning. */
+.pmo-message--self .pmo-message__body {
+  background: color-mix(in srgb, var(--pmo-brand) 12%, var(--pmo-surface));
+  border-color: color-mix(in srgb, var(--pmo-brand) 40%, var(--pmo-border));
+}
+/* Agent turns are visually distinct from humans: this is the one participant
+   that is not a person, and requirement #2 makes that distinction load-bearing. */
+.pmo-message--agent .pmo-message__body {
+  border-left: 2px solid var(--pmo-brand);
+  border-radius: .1rem .55rem .55rem .1rem;
+}
+.pmo-message--system .pmo-message__body {
+  background: transparent; border-style: dashed; color: var(--pmo-muted); font-size: .85rem;
+}
+.pmo-mention {
+  font-weight: 650; padding: 0 .15rem; border-radius: .2rem;
+  color: var(--pmo-brand);
+  background: color-mix(in srgb, var(--pmo-brand) 14%, transparent);
+}
+.pmo-day-rule {
+  display: flex; align-items: center; gap: .6rem;
+  margin: .6rem 0 .35rem; font-size: .7rem; color: var(--pmo-muted);
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.pmo-day-rule::before, .pmo-day-rule::after {
+  content: ""; flex: 1; border-top: 1px solid var(--pmo-border);
+}
+.pmo-thread-title {
+  display: flex; align-items: baseline; gap: .5rem; flex-wrap: wrap;
+  margin-block-end: .35rem;
+}
+.pmo-thread-count { font-size: .72rem; color: var(--pmo-muted); }
+.pmo-thread-tag {
+  font-size: .62rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+  padding: .1rem .4rem; border-radius: 999px;
+  border: 1px solid var(--pmo-border); color: var(--pmo-muted);
+}
+/* An external thread must not read like the trusted founder's channel. */
+.pmo-thread-tag--external {
+  border-color: color-mix(in srgb, #b67a1e 70%, var(--pmo-border));
+  color: #d69b3c;
+  background: color-mix(in srgb, #b67a1e 16%, transparent);
+}
+.pmo-external-note {
+  font-size: .78rem; color: var(--pmo-muted);
+  border-inline-start: 2px solid color-mix(in srgb, #b67a1e 70%, var(--pmo-border));
+  padding: .3rem .55rem; margin-block-end: .35rem;
+  background: color-mix(in srgb, #b67a1e 8%, transparent);
+  border-radius: 0 .3rem .3rem 0;
+}
+.pmo-composer { display: flex; flex-direction: column; gap: .35rem; margin-block-start: .65rem; position: relative; }
+.pmo-composer textarea, .pmo-inline-form input {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .4rem;
+  color: var(--pmo-text); min-height: 36px; padding: .5rem;
+}
+.pmo-decision-form { background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border); border-radius: .45rem; display: flex; flex-direction: column; gap: .5rem; margin-block-start: .75rem; padding: .75rem; }
+.pmo-decision-form textarea { background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .4rem; color: var(--pmo-text); min-height: 72px; padding: .5rem; resize: vertical; }
+.pmo-access-form, .pmo-human-task-form { display: flex; flex-direction: column; gap: .45rem; margin-top: .75rem; }
+.pmo-access-form select, .pmo-human-task-form textarea { background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .4rem; color: var(--pmo-text); min-height: 36px; padding: .5rem; }
+.pmo-human-task-form { max-width: 720px; }
+/* The mention list is the only place a project's real roster is visible while
+ * writing. At 180px it showed five of twenty-one rows, which looked identical
+ * to the old hardcoded stub — the data was right and the window was wrong. */
+.pmo-combobox {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border);
+  border-radius: .4rem; list-style: none; margin: 0;
+  max-height: min(42vh, 380px); overflow: auto; padding: .25rem;
+  box-shadow: 0 8px 24px rgb(0 0 0 / .28);
+}
+/* The composer sits at the bottom of the chat pane, so a list rendered in
+ * normal flow opens downward and is clipped by the viewport — most of the
+ * roster becomes unreachable. Float it above the textarea instead, which is
+ * where every chat client puts it. */
+.pmo-composer { position: relative; }
+.pmo-composer > .pmo-combobox {
+  position: absolute;
+  bottom: calc(100% - 1.4rem);
+  inset-inline: 0;
+  z-index: 30;
+}
+.pmo-combobox button {
+  background: transparent; border: 0; color: inherit; min-height: 32px;
+  text-align: start; width: 100%;
+  display: flex; align-items: baseline; gap: .5rem; padding: .25rem .45rem;
+  border-radius: .3rem;
+}
+.pmo-combobox [aria-selected="true"] button { background: var(--pmo-surface-muted); }
+.pmo-combobox__handle { font-weight: 650; }
+.pmo-combobox__role { color: var(--pmo-muted); font-size: .78rem; }
+.pmo-combobox__kind {
+  margin-inline-start: auto; font-size: .62rem; font-weight: 700;
+  letter-spacing: .05em; text-transform: uppercase;
+  padding: .05rem .3rem; border-radius: 999px;
+  border: 1px solid var(--pmo-border); color: var(--pmo-muted);
+}
+.pmo-combobox__kind--agent { border-color: var(--pmo-brand); color: var(--pmo-brand); }
+.pmo-combobox__group {
+  font-size: .64rem; font-weight: 700; letter-spacing: .07em;
+  text-transform: uppercase; color: var(--pmo-muted);
+  padding: .4rem .45rem .2rem; position: sticky; top: 0;
+  background: var(--pmo-surface);
+}
+.pmo-card-list, .pmo-timeline { display: flex; flex-direction: column; gap: .6rem; }
+.pmo-timeline { list-style: none; padding: 0; }
+.pmo-timeline li { border-inline-start: 2px solid var(--pmo-border); display: grid; gap: .5rem; grid-template-columns: 100px 150px minmax(0, 1fr); padding: .45rem .7rem; }
+.pmo-context { color: inherit; max-height: 420px; overflow: auto; white-space: pre-wrap; }
+.pmo-card-move { background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .3rem; color: var(--pmo-text); min-height: 24px; min-width: 32px; }
+.pmo-load-more { background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border); border-radius: .4rem; color: var(--pmo-text); cursor: pointer; margin: .5rem; min-height: 36px; padding: .4rem .65rem; }
+
+/* Repository connections live on the project overview: dense enough for
+ * operational scanning, with add flows progressively disclosed below. */
+.pmo-repositories { overflow: hidden; padding: 0; }
+.pmo-repositories__heading {
+  align-items: flex-start; display: flex; gap: 1rem; justify-content: space-between;
+  padding: 1rem 1rem .8rem;
+}
+.pmo-repositories__actions { align-items: center; display: flex; flex-wrap: wrap; gap: .55rem; justify-content: flex-end; }
+.pmo-repository-count {
+  background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border);
+  border-radius: 999px; color: var(--pmo-muted); font-size: .7rem;
+  font-weight: 650; padding: .2rem .55rem; white-space: nowrap;
+}
+.pmo-repository-list {
+  display: grid; gap: .7rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 310px), 1fr));
+  padding: 0 1rem 1rem;
+}
+.pmo-repository-card {
+  background: linear-gradient(145deg, color-mix(in srgb, var(--pmo-brand) 4%, var(--pmo-surface)), var(--pmo-surface) 58%);
+  border: 1px solid var(--pmo-border); border-radius: .65rem; min-width: 0; padding: .8rem;
+}
+.pmo-repository-card__head {
+  align-items: center; display: grid; gap: .55rem;
+  grid-template-columns: 34px minmax(0, 1fr) auto auto;
+}
+.pmo-repository-mark {
+  align-items: center; background: color-mix(in srgb, var(--pmo-brand) 14%, var(--pmo-surface));
+  border: 1px solid color-mix(in srgb, var(--pmo-brand) 36%, var(--pmo-border));
+  border-radius: .5rem; color: var(--pmo-brand); display: inline-flex; font-size: 1rem;
+  height: 34px; justify-content: center; width: 34px;
+}
+.pmo-repository-card__identity { min-width: 0; }
+.pmo-repository-card__identity h4 { font-size: .9rem; margin: 0; }
+.pmo-repository-card__identity code {
+  color: var(--pmo-muted); display: block; font-size: .69rem; margin-top: .12rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.pmo-repository-primary, .pmo-repository-validation {
+  border: 1px solid var(--pmo-border); border-radius: 999px; font-size: .62rem;
+  font-weight: 700; padding: .12rem .42rem; white-space: nowrap;
+}
+.pmo-repository-primary { border-color: color-mix(in srgb, var(--pmo-brand) 48%, var(--pmo-border)); color: var(--pmo-brand); }
+.pmo-repository-validation { align-items: center; color: var(--pmo-muted); display: inline-flex; gap: .3rem; text-transform: capitalize; }
+.pmo-repository-validation > span { background: currentColor; border-radius: 50%; height: .42rem; width: .42rem; }
+.pmo-repository-validation--good { color: var(--color-success, #2e8b57); }
+.pmo-repository-validation--bad { color: var(--color-destructive, #b42318); }
+.pmo-repository-github {
+  align-items: center; background: color-mix(in srgb, var(--pmo-text) 3%, var(--pmo-surface));
+  border: 1px solid var(--pmo-border); border-radius: .45rem; display: flex;
+  flex-wrap: wrap; font-size: .68rem; gap: .3rem .5rem; margin-top: .7rem; padding: .42rem .5rem;
+}
+.pmo-repository-github__brand {
+  background: var(--pmo-text); border-radius: .28rem; color: var(--pmo-surface);
+  font-size: .57rem; font-weight: 800; letter-spacing: .045em; padding: .12rem .32rem; text-transform: uppercase;
+}
+.pmo-repository-github strong { font-size: .72rem; }
+.pmo-repository-github > span:last-child { color: var(--pmo-muted); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-repository-meta {
+  display: grid; gap: .65rem; grid-template-columns: minmax(0, 1.7fr) repeat(2, minmax(80px, .65fr));
+  margin: .8rem 0 0;
+}
+.pmo-repository-meta div { min-width: 0; }
+.pmo-repository-meta dt {
+  color: var(--pmo-muted); font-size: .6rem; font-weight: 700; letter-spacing: .055em;
+  margin-bottom: .12rem; text-transform: uppercase;
+}
+.pmo-repository-meta dd { font-size: .75rem; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-repository-card__actions {
+  align-items: center; border-top: 1px solid var(--pmo-border); display: flex; flex-wrap: wrap;
+  font-size: .72rem; gap: .4rem; justify-content: flex-end; margin-top: .75rem; padding-top: .65rem;
+}
+.pmo-repository-card__actions > span { color: var(--pmo-muted); margin-right: auto; }
+.pmo-repository-empty {
+  align-items: center; color: var(--pmo-muted); display: flex; flex-direction: column;
+  gap: .35rem; padding: .8rem 1rem 1.2rem; text-align: center;
+}
+.pmo-repository-empty > span { color: var(--pmo-brand); font-size: 1.3rem; }
+.pmo-repository-empty p { margin: 0; }
+.pmo-repository-composer {
+  background: color-mix(in srgb, var(--pmo-surface-muted) 76%, var(--pmo-surface));
+  border-top: 1px solid var(--pmo-border); padding: .85rem 1rem 1rem;
+}
+.pmo-repository-dialog { padding: 0; width: min(760px, calc(100vw - 2rem)); }
+.pmo-repository-dialog__head {
+  align-items: flex-start; border-bottom: 1px solid var(--pmo-border); display: flex;
+  gap: 1rem; justify-content: space-between; padding: 1rem 1.1rem .85rem;
+}
+.pmo-repository-dialog__head h3 { font-size: 1rem; margin: 0; }
+.pmo-repository-dialog__head p { color: var(--pmo-muted); font-size: .72rem; margin: .2rem 0 0; max-width: 580px; }
+.pmo-repository-dialog__close {
+  align-items: center; background: transparent; border: 1px solid transparent; border-radius: .4rem;
+  color: var(--pmo-muted); cursor: pointer; display: inline-flex; font-size: 1.25rem;
+  height: 32px; justify-content: center; line-height: 1; width: 32px;
+}
+.pmo-repository-dialog__close:hover, .pmo-repository-dialog__close:focus-visible {
+  background: var(--pmo-surface-muted); border-color: var(--pmo-border); color: var(--pmo-text); outline: none;
+}
+.pmo-repository-dialog .pmo-repository-composer { background: transparent; border: 0; padding: .9rem 1.1rem 1.1rem; }
+.pmo-repository-tabs { display: inline-flex; gap: .2rem; margin-bottom: .75rem; }
+.pmo-repository-tabs button {
+  background: transparent; border: 1px solid transparent; border-radius: .4rem;
+  color: var(--pmo-muted); cursor: pointer; font: inherit; font-size: .75rem;
+  font-weight: 650; min-height: 34px; padding: .35rem .65rem;
+}
+.pmo-repository-tabs button.is-active {
+  background: var(--pmo-surface); border-color: var(--pmo-border); color: var(--pmo-text);
+  box-shadow: 0 1px 2px rgb(0 0 0 / .08);
+}
+.pmo-github-connect { display: flex; flex-direction: column; gap: .7rem; }
+.pmo-github-consent, .pmo-github-unconfigured {
+  align-items: center; background: var(--pmo-surface); border: 1px solid var(--pmo-border);
+  border-radius: .6rem; display: grid; gap: .7rem; grid-template-columns: 38px minmax(0, 1fr) auto;
+  padding: .7rem;
+}
+.pmo-github-unconfigured { grid-template-columns: 38px minmax(0, 1fr); }
+.pmo-github-unconfigured .pmo-github-consent {
+  background: transparent; border: 0; display: block; grid-column: 1 / -1; padding: .1rem 0 0;
+}
+.pmo-github-setup {
+  background: color-mix(in srgb, var(--pmo-brand) 7%, transparent); border-inline-start: 2px solid var(--pmo-brand);
+  color: var(--pmo-muted); font-size: .7rem; margin-top: .6rem; padding: .5rem .6rem;
+}
+.pmo-github-setup p { margin: 0 0 .45rem !important; }
+.pmo-github-setup a { color: var(--pmo-brand); font-weight: 700; }
+.pmo-github-mark {
+  align-items: center; background: var(--pmo-text); border-radius: .55rem; color: var(--pmo-surface);
+  display: inline-flex; font-size: .67rem; font-weight: 800; height: 38px; justify-content: center; width: 38px;
+}
+.pmo-github-consent strong, .pmo-github-unconfigured strong { display: block; font-size: .8rem; }
+.pmo-github-consent p, .pmo-github-unconfigured p { color: var(--pmo-muted); font-size: .7rem; margin: .15rem 0 0; }
+.pmo-github-access {
+  background: color-mix(in srgb, var(--pmo-brand) 6%, transparent); border-inline-start: 2px solid var(--pmo-brand);
+  color: var(--pmo-muted); font-size: .69rem; margin: 0; padding: .42rem .55rem;
+}
+.pmo-github-progress, .pmo-local-hint { color: var(--pmo-muted); font-size: .72rem; margin: 0; }
+.pmo-github-authorization {
+  align-items: center; background: color-mix(in srgb, var(--pmo-brand) 7%, var(--pmo-surface));
+  border: 1px solid color-mix(in srgb, var(--pmo-brand) 35%, var(--pmo-border)); border-radius: .5rem;
+  display: grid; font-size: .71rem; gap: .5rem; grid-template-columns: auto minmax(0, 1fr) auto; padding: .58rem .65rem;
+}
+.pmo-github-authorization a { color: var(--pmo-brand); font-weight: 700; white-space: nowrap; }
+.pmo-github-authorization__pulse { background: var(--pmo-brand); border-radius: 50%; height: .55rem; width: .55rem; }
+.pmo-github-authorization--waiting .pmo-github-authorization__pulse,
+.pmo-github-authorization--selection .pmo-github-authorization__pulse { animation: pmo-github-pulse 1.4s ease-in-out infinite; }
+.pmo-github-authorization--ready { border-color: color-mix(in srgb, var(--color-success, #2e8b57) 55%, var(--pmo-border)); }
+.pmo-github-authorization--ready .pmo-github-authorization__pulse { background: var(--color-success, #2e8b57); }
+@keyframes pmo-github-pulse { 50% { opacity: .35; transform: scale(.78); } }
+.pmo-github-selection { color: var(--pmo-muted); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .7rem; }
+.pmo-github-operation { margin: 0; }
+.pmo-repository-form { display: flex; flex-direction: column; gap: .65rem; }
+.pmo-repository-fields, .pmo-repository-fields--clone { display: grid; gap: .65rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px), 1fr)); }
+.pmo-repository-fields label { display: flex; flex-direction: column; gap: .28rem; min-width: 0; }
+.pmo-repository-fields label > span { font-size: .7rem; font-weight: 650; }
+.pmo-repository-fields label small { color: var(--pmo-muted); font-size: .62rem; font-weight: 500; margin-left: .35rem; }
+.pmo-repository-fields input, .pmo-repository-fields select {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .42rem;
+  color: var(--pmo-text); min-height: 38px; min-width: 0; padding: .5rem .6rem; width: 100%;
+}
+.pmo-repository-form__footer { align-items: center; display: flex; gap: .7rem; justify-content: space-between; }
+.pmo-repository-form__footer .pmo-check { color: var(--pmo-muted); font-size: .75rem; }
+.pmo-repository-credentials { color: var(--pmo-muted); font-size: .68rem; margin: -.1rem 0 0; }
+.pmo-repository-form > .pmo-state { min-height: 0; padding: .25rem 0 0; }
+.pmo-onboarding { margin-inline: auto; max-width: 1120px; }
+.pmo-onboarding-steps {
+  counter-reset: onboarding-step; display: grid; gap: .6rem; grid-template-columns: repeat(3, minmax(0, 1fr));
+  list-style: none; margin: 0 0 .85rem; padding: 0;
+}
+.pmo-onboarding-steps li {
+  align-items: center; background: var(--pmo-surface); border: 1px solid var(--pmo-border);
+  border-radius: .55rem; color: var(--pmo-muted); display: flex; font-size: .72rem; gap: .5rem; padding: .5rem .6rem;
+}
+.pmo-onboarding-steps li > span, .pmo-onboarding-card__title > span {
+  align-items: center; background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border);
+  border-radius: 50%; display: inline-flex; flex: 0 0 auto; font-size: .67rem; font-weight: 800;
+  height: 25px; justify-content: center; width: 25px;
+}
+.pmo-onboarding-steps li.is-active { border-color: color-mix(in srgb, var(--pmo-brand) 55%, var(--pmo-border)); color: var(--pmo-text); }
+.pmo-onboarding-steps li.is-active > span { background: var(--pmo-brand); border-color: var(--pmo-brand); color: white; }
+.pmo-onboarding-steps li.is-complete > span { background: var(--color-success, #2e8b57); border-color: transparent; color: white; }
+.pmo-onboarding-card { display: flex; flex-direction: column; gap: .85rem; padding: 1rem; }
+.pmo-onboarding-card__title { align-items: flex-start; display: flex; gap: .65rem; }
+.pmo-onboarding-card__title > span { border-radius: .4rem; height: 30px; width: 30px; }
+.pmo-onboarding-card__title h3 { font-size: .92rem; margin: 0; }
+.pmo-onboarding-card__title p { color: var(--pmo-muted); font-size: .71rem; margin: .15rem 0 0; }
+.pmo-onboarding-fields { display: grid; gap: .7rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.pmo-onboarding-fields label { display: flex; flex-direction: column; gap: .28rem; min-width: 0; }
+.pmo-onboarding-fields label > span { font-size: .7rem; font-weight: 650; }
+.pmo-onboarding-fields label small { color: var(--pmo-muted); font-size: .62rem; font-weight: 500; margin-left: .35rem; }
+.pmo-onboarding-fields input, .pmo-onboarding-fields select {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .42rem;
+  color: var(--pmo-text); min-height: 40px; min-width: 0; padding: .5rem .6rem; width: 100%;
+}
+.pmo-onboarding-pm {
+  align-items: center; background: color-mix(in srgb, var(--pmo-brand) 7%, var(--pmo-surface));
+  border: 1px solid color-mix(in srgb, var(--pmo-brand) 28%, var(--pmo-border)); border-radius: .58rem;
+  display: flex; gap: .7rem; padding: .7rem;
+}
+.pmo-onboarding-avatar {
+  align-items: center; background: var(--pmo-brand); border-radius: .5rem; color: white;
+  display: inline-flex; flex: 0 0 auto; font-size: .67rem; font-weight: 800; height: 38px; justify-content: center; width: 38px;
+}
+.pmo-onboarding-pm div { display: grid; gap: .08rem; }
+.pmo-onboarding-pm div > span { color: var(--pmo-muted); font-size: .65rem; }
+.pmo-onboarding-pm strong { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .78rem; }
+.pmo-onboarding-pm p { color: var(--pmo-muted); font-size: .67rem; margin: .12rem 0 0; }
+.pmo-onboarding-actions { align-items: center; display: flex; justify-content: flex-end; }
+.pmo-onboarding-summary { display: grid; gap: .7rem; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.pmo-onboarding-summary div { display: grid; gap: .12rem; min-width: 0; }
+.pmo-onboarding-summary span { color: var(--pmo-muted); font-size: .62rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.pmo-onboarding-summary strong, .pmo-onboarding-summary code { font-size: .75rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-onboarding-repositories { display: grid; gap: .5rem; }
+.pmo-onboarding-repository {
+  align-items: center; background: var(--pmo-surface-muted); border: 1px solid var(--pmo-border);
+  border-radius: .55rem; display: grid; gap: .6rem; grid-template-columns: 38px minmax(130px, 1.3fr) minmax(110px, 1fr) auto auto; padding: .6rem;
+}
+.pmo-onboarding-repository > div { display: grid; min-width: 0; }
+.pmo-onboarding-repository > div span { color: var(--pmo-muted); font-size: .65rem; }
+.pmo-onboarding-repository code { color: var(--pmo-muted); font-size: .68rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pmo-state { align-items: center; color: var(--pmo-muted); display: flex; gap: .5rem; min-height: 48px; padding: .7rem; }
+.pmo-state--error { color: var(--color-destructive, #b42318); }
+.pmo-workflow-card {
+  background: color-mix(in srgb, var(--pmo-brand) 5%, var(--pmo-surface));
+  border: 1px solid color-mix(in srgb, var(--pmo-brand) 28%, var(--pmo-border));
+  border-radius: .7rem; display: grid; gap: .8rem; margin-top: .7rem; max-width: 760px;
+  padding: .85rem;
+}
+.pmo-workflow-card__head { align-items: flex-start; display: flex; gap: .65rem; }
+.pmo-workflow-card__head > span {
+  align-items: center; background: var(--pmo-brand); border-radius: .48rem; color: white;
+  display: inline-flex; flex: 0 0 auto; font-size: .72rem; font-weight: 800; height: 30px;
+  justify-content: center; width: 30px;
+}
+.pmo-workflow-card__head strong { display: block; font-size: .82rem; }
+.pmo-workflow-card__head p { color: var(--pmo-muted); font-size: .69rem; margin: .15rem 0 0; }
+.pmo-workflow-card fieldset { border: 0; display: grid; gap: .5rem; margin: 0; min-width: 0; padding: 0; }
+.pmo-workflow-card legend { color: var(--pmo-text); font-size: .74rem; font-weight: 700; margin-bottom: .45rem; padding: 0; }
+.pmo-workflow-options { display: grid; gap: .42rem; grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.pmo-workflow-option {
+  align-items: flex-start; background: var(--pmo-surface); border: 1px solid var(--pmo-border);
+  border-radius: .5rem; cursor: pointer; display: flex; gap: .48rem; min-height: 58px; padding: .55rem;
+}
+.pmo-workflow-option:hover { border-color: color-mix(in srgb, var(--pmo-brand) 45%, var(--pmo-border)); }
+.pmo-workflow-option.is-selected {
+  background: color-mix(in srgb, var(--pmo-brand) 8%, var(--pmo-surface));
+  border-color: var(--pmo-brand); box-shadow: 0 0 0 1px color-mix(in srgb, var(--pmo-brand) 25%, transparent);
+}
+.pmo-workflow-option input { accent-color: var(--pmo-brand); margin: .12rem 0 0; }
+.pmo-workflow-option span { display: grid; gap: .1rem; min-width: 0; }
+.pmo-workflow-option strong { font-size: .71rem; }
+.pmo-workflow-option small { color: var(--pmo-muted); font-size: .63rem; line-height: 1.35; }
+.pmo-workflow-other {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .5rem; color: var(--pmo-text);
+  font: inherit; font-size: .72rem; min-height: 64px; padding: .55rem; resize: vertical; width: 100%;
+}
+.pmo-workflow-card footer { align-items: center; border-top: 1px solid var(--pmo-border); display: flex; gap: .7rem; justify-content: space-between; padding-top: .7rem; }
+.pmo-workflow-card footer > span { color: var(--pmo-muted); font-size: .65rem; }
+.pmo-workflow-primary {
+  background: var(--pmo-brand); border: 1px solid var(--pmo-brand); border-radius: .45rem; color: white;
+  cursor: pointer; font: inherit; font-size: .68rem; font-weight: 750; min-height: 36px; padding: .45rem .7rem;
+}
+.pmo-workflow-primary:disabled { cursor: not-allowed; opacity: .48; }
+.pmo-workflow-done { color: var(--color-success, #2e8b57) !important; font-weight: 700; }
+.pmo-ticket-proposal {
+  background: var(--pmo-surface); border: 1px solid var(--pmo-border); border-radius: .55rem;
+  display: grid; gap: .5rem; grid-template-columns: minmax(0, 1fr) auto; padding: .7rem;
+}
+.pmo-ticket-proposal > div { display: grid; gap: .08rem; }
+.pmo-ticket-proposal small { color: var(--pmo-muted); font-size: .59rem; font-weight: 700; letter-spacing: .04em; text-transform: uppercase; }
+.pmo-ticket-proposal strong { font-size: .74rem; }
+.pmo-ticket-proposal > p, .pmo-ticket-proposal details { grid-column: 1 / -1; }
+.pmo-ticket-proposal > p { color: var(--pmo-muted); font-size: .7rem; margin: 0; }
+.pmo-ticket-proposal details { border-top: 1px solid var(--pmo-border); padding-top: .45rem; }
+.pmo-ticket-proposal summary { color: var(--pmo-brand); cursor: pointer; font-size: .68rem; font-weight: 700; }
+.pmo-ticket-proposal details p, .pmo-ticket-proposal details li { color: var(--pmo-muted); font-size: .66rem; }
+.pmo-ticket-proposal details ul { margin: .35rem 0 0; padding-left: 1.15rem; }
+.pmo-board-empty { background: var(--pmo-surface-muted); border: 1px dashed var(--pmo-border); border-radius: .5rem; color: var(--pmo-muted); padding: .9rem; }
+.pmo-sr-only { height: 1px; margin: -1px; overflow: hidden; padding: 0; position: absolute; width: 1px; clip: rect(0 0 0 0); }
+.pmo-shell :where(button, a, input, textarea, select, [tabindex]):focus-visible,
+.hermes-kanban :where(button, a, input, textarea, select, [tabindex]):focus-visible {
+  outline: 2px solid var(--pmo-brand, var(--color-primary, #315efb));
+  outline-offset: 2px;
+}
+.pmo-content h2[tabindex="-1"]:focus { outline: none; }
+@media (max-width: 760px) {
+  .pmo-grid, .pmo-thread-layout { grid-template-columns: 1fr; }
+  .pmo-chat-view .pmo-chat-sidebar { max-height: 34vh; }
+  .pmo-admin-layout .pmo-chat-sidebar {
+    align-items: center; display: flex; gap: .2rem; max-height: none; overflow-x: auto;
+    overscroll-behavior-inline: contain; padding: .35rem;
+  }
+  .pmo-admin-layout .pmo-chat-sidebar__title { flex: 0 0 auto; padding: .35rem .45rem; }
+  .pmo-admin-folder-button { flex: 0 0 auto; max-width: 15rem; width: auto; }
+  .pmo-thread.pmo-admin-thread {
+    display: flex; flex-direction: column; min-height: 0;
+  }
+  .pmo-admin-thread > .pmo-thread-header { order: 0; }
+  .pmo-admin-thread > .pmo-messages { min-height: 260px; order: 1; }
+  .pmo-admin-thread > .pmo-messages--empty { min-height: 150px; }
+  .pmo-admin-thread > .pmo-composer { order: 2; }
+  .pmo-admin-thread > .pmo-admin-tools { max-height: none; order: 3; overflow: visible; }
+  .pmo-nav { flex-wrap: nowrap; overflow-x: auto; }
+  .pmo-header, .pmo-heading-row { align-items: flex-start; flex-direction: column; }
+  .pmo-project-context { align-items: flex-start; flex-wrap: wrap; }
+  .pmo-project-context__hint { margin-left: 0; width: 100%; }
+  .pmo-timeline li { grid-template-columns: 1fr; }
+  .pmo-messages { overflow-x: hidden; }
+  .pmo-message { grid-template-columns: 28px minmax(0, 1fr); gap: .1rem .45rem; }
+  .pmo-message__avatar { height: 28px; width: 28px; }
+  .pmo-agent-activity { margin-inline: .25rem; }
+  .pmo-subchat { margin-inline: .25rem; }
+  .pmo-subchat__toggle { gap: .45rem; grid-template-columns: 28px minmax(0, 1fr) 12px; padding: .55rem; }
+  .pmo-subchat__avatar { height: 28px; width: 28px; }
+  .pmo-subchat__state { display: none; }
+  .pmo-subchat__detail { padding: .5rem .55rem .65rem 2.3rem; }
+  .pmo-repositories__heading { align-items: flex-start; }
+  .pmo-repository-card__head { grid-template-columns: 34px minmax(0, 1fr) auto; }
+  .pmo-repository-validation { grid-column: 2 / -1; justify-self: start; }
+  .pmo-repository-meta, .pmo-repository-fields, .pmo-repository-fields--clone { grid-template-columns: 1fr; }
+  .pmo-github-consent { align-items: start; grid-template-columns: 38px minmax(0, 1fr); }
+  .pmo-github-consent > :last-child { grid-column: 1 / -1; width: 100%; }
+  .pmo-repository-form__footer { align-items: stretch; flex-direction: column; }
+  .pmo-onboarding-steps { grid-template-columns: 1fr; }
+  .pmo-onboarding-fields, .pmo-onboarding-summary { grid-template-columns: 1fr; }
+  .pmo-onboarding-repository { align-items: start; grid-template-columns: 38px minmax(0, 1fr) auto; }
+  .pmo-onboarding-repository > code { grid-column: 2 / -1; }
+  .pmo-onboarding-repository > :last-child { grid-column: 1 / -1; width: 100%; }
+  .pmo-workflow-options, .pmo-workflow-options--decision { grid-template-columns: 1fr; }
+  .pmo-workflow-card footer { align-items: stretch; flex-direction: column; }
+  .pmo-workflow-primary { width: 100%; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pmo-shell *, .hermes-kanban * { animation-duration: .001ms !important; animation-iteration-count: 1 !important; scroll-behavior: auto !important; transition-duration: .001ms !important; }
+}
+/* PMO wrapper preflight. The host loads plugin assets asynchronously, so
+ * keep the inherited sidebar from flashing every Hermes tab before the
+ * project role policy has arrived. This remains in the copied plugin
+ * stylesheet; upstream Hermes shell files stay untouched. */
+#app-sidebar nav a[href] { visibility: hidden; }
+#app-sidebar nav a[href="/chat"],
+#app-sidebar nav a[href="/files"],
+#app-sidebar nav a[href="/pmo"] { visibility: visible; }
+#app-sidebar nav [role="group"] { visibility: hidden; }
+#app-sidebar > div:first-child > div > span.font-sans.font-bold { font-size: 0; }
+#app-sidebar > div:first-child > div > span.font-sans.font-bold::before {
+  content: "DATANSH\A HERMES";
+  display: inline-block;
+  font-size: 1.125rem;
+  line-height: .95;
+  letter-spacing: .0525rem;
+  white-space: pre;
+}
+header button[aria-label*="navigation"] + span { font-size: 0; }
+header button[aria-label*="navigation"] + span::before {
+  content: "DATANSH\A HERMES";
+  font-size: .95rem;
+  line-height: .9;
+  white-space: pre;
+}
+html[data-datansh-hermes-policy-ready="true"] #app-sidebar nav a[href],
+html[data-datansh-hermes-policy-ready="true"] #app-sidebar nav [role="group"] {
+  visibility: visible;
+}
+
+/* PMO-DASHBOARD-EXTENSION:END */

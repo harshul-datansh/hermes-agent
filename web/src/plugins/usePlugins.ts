@@ -100,9 +100,13 @@ export function usePlugins() {
     const injectedScripts: HTMLScriptElement[] = [];
 
     for (const manifest of manifests) {
+      // A plugin can be updated while the long-running dashboard stays on the
+      // same origin. Include its manifest version in production asset URLs so
+      // the server's immutable cache cannot pin an older bundle after deploy.
+      const assetVersion = encodeURIComponent(manifest.version || "0");
       // Inject CSS if specified.
       if (manifest.css) {
-        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}`;
+        const cssUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.css}?hermes_pv=${assetVersion}`;
         if (!document.querySelector(`link[href="${cssUrl}"]`)) {
           const link = document.createElement("link");
           link.rel = "stylesheet";
@@ -114,9 +118,9 @@ export function usePlugins() {
       // Load JS bundle. In dev, cache-bust so Vite HMR can clear the
       // in-memory registry while the browser would otherwise never
       // re-execute a previously cached <script> URL.
-      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}`;
+      const baseUrl = `${HERMES_BASE_PATH}/dashboard-plugins/${manifest.name}/${manifest.entry}?hermes_pv=${assetVersion}`;
       const scriptSrc = import.meta.env.DEV
-        ? `${baseUrl}?hermes_dv=${Date.now()}`
+        ? `${baseUrl}&hermes_dv=${Date.now()}`
         : baseUrl;
       if (!import.meta.env.DEV) {
         if (loadedScripts.current.has(baseUrl)) continue;

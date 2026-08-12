@@ -6,6 +6,7 @@ gateway detection, and per-platform port resolution.
 """
 
 import pytest
+from types import SimpleNamespace
 
 from hermes_cli import web_server
 from hermes_cli.web_server import (
@@ -130,6 +131,45 @@ class TestStatusEndpointTopology:
         assert data["gateway_mode"] == "single"
         # The per-gateway detail (host ports) is loopback-only recon.
         assert data["gateways"] == [{"profile": "default", "ports": {}}]
+
+    def test_named_profile_reports_live_when_served_by_multiplexer(
+        self, monkeypatch, tmp_path
+    ):
+        profile_home = tmp_path / "pm-demo"
+        profile_home.mkdir()
+        monkeypatch.setattr(
+            web_server, "_resolve_profile_dir", lambda _name: profile_home
+        )
+        monkeypatch.setattr(
+            web_server,
+            "resolve_gateway_liveness",
+            lambda **_kwargs: SimpleNamespace(
+                running=False, pid=None, health_body=None
+            ),
+        )
+        monkeypatch.setattr(web_server, "read_runtime_status", lambda **_kwargs: None)
+        monkeypatch.setattr(
+            web_server,
+            "_collect_profile_gateway_topology",
+            lambda: {
+                "profiles": ["default", "pm-demo"],
+                "gateway_mode": "multiplex",
+                "gateways": [
+                    {
+                        "profile": "default",
+                        "ports": {},
+                        "served_profiles": ["default", "pm-demo"],
+                    }
+                ],
+            },
+        )
+
+        resp = self.client.get("/api/status?profile=pm-demo")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["gateway_running"] is True
+        assert data["gateway_state"] == "running"
+        assert data["components"]["gateway"]["status"] == "ok"
 
     def test_profile_names_and_mode_public_when_auth_gated(self, monkeypatch):
         # Profile NAMES + gateway_mode are low-sensitivity product surface: the

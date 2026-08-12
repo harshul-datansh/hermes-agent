@@ -1,11 +1,22 @@
 import logging
 import os
 from io import StringIO
+from pathlib import Path
 import subprocess
 
 import pytest
 
 from tools.environments import docker as docker_env
+
+
+def _test_bash_executable() -> str:
+    """Use Git Bash on Windows instead of the optional WSL app alias."""
+
+    if os.name == "nt":
+        git_bash = Path(r"C:\Program Files\Git\bin\bash.exe")
+        if git_bash.is_file():
+            return str(git_bash)
+    return "bash"
 
 
 def _mock_subprocess_run(monkeypatch):
@@ -55,6 +66,7 @@ def _make_dummy_env(**kwargs):
         extra_args=kwargs.get("extra_args", []),
         persist_across_processes=kwargs.get("persist_across_processes", True),
         shm_size=kwargs.get("shm_size", docker_env._DEFAULT_SHM_SIZE),
+        strict_mounts=kwargs.get("strict_mounts", False),
     )
 
 
@@ -323,7 +335,7 @@ def test_wrapped_exec_scopes_explicit_forward_env_across_profiles(monkeypatch, t
             index += 2
         assert cmd[container_index + 1 : container_index + 3] == ["bash", "-c"]
         return subprocess.Popen(
-            ["bash", "-c", cmd[container_index + 3]],
+            [_test_bash_executable(), "-c", cmd[container_index + 3]],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
@@ -600,12 +612,36 @@ def test_labels_attribute_populated_after_init(monkeypatch):
 
     env = _make_dummy_env(task_id="abc")
 
+    mount_profile = env._labels.pop("hermes-mount-profile")
+    assert len(mount_profile) == 24
+    assert all(char in "0123456789abcdef" for char in mount_profile)
     assert env._labels == {
         "hermes-agent": "1",
         "hermes-task-id": "abc",
         "hermes-profile": "default",
         "hermes-egress": "off",
     }
+
+
+def test_reuse_query_is_bound_to_requested_mount_profile(monkeypatch):
+    """A project task must not reuse a container with a stale mount set."""
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    calls = _mock_subprocess_run(monkeypatch)
+
+    _make_dummy_env(
+        task_id="project-task",
+        volumes=["/host/project:/workspace", "/host/repo:/workspaces/1"],
+        strict_mounts=True,
+    )
+
+    ps_cmd = next(cmd for cmd, _ in calls if isinstance(cmd, list) and cmd[1] == "ps")
+    expected = docker_env._mount_reuse_fingerprint(
+        "python:3.11",
+        "/root",
+        ["--tmpfs", "/home:rw,exec,size=1g", "--tmpfs", "/root:rw,exec,size=1g"],
+        ["-v", "/host/project:/workspace", "-v", "/host/repo:/workspaces/1"],
+    )
+    assert f"label=hermes-mount-profile={expected}" in ps_cmd
 
 
 # ── Cross-process container reuse (issue #20561) ──────────────────
@@ -1228,6 +1264,50 @@ def test_container_finished_at_returns_none_on_zero_value():
     ):
         result = docker_env._container_finished_at("/usr/bin/docker", "never-finished")
     assert result is None
+
+
+def test_strict_mounts_use_only_explicit_volumes_and_ignore_extra_args(
+    monkeypatch, tmp_path
+):
+    project = tmp_path / "project"
+    outside = tmp_path / "outside"
+    project.mkdir()
+    outside.mkdir()
+
+    monkeypatch.setattr(docker_env, "find_docker", lambda: "/usr/bin/docker")
+    monkeypatch.setattr(
+        docker_env, "_egress_proxy_args_for_docker", lambda: ([], {}, [])
+    )
+    calls = _mock_subprocess_run(monkeypatch)
+
+    def implicit_mount_called():
+        pytest.fail("strict mount mode consulted an implicit host mount provider")
+
+    monkeypatch.setattr(
+        "tools.credential_files.get_credential_file_mounts", implicit_mount_called
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_skills_directory_mount", implicit_mount_called
+    )
+    monkeypatch.setattr(
+        "tools.credential_files.get_cache_directory_mounts", implicit_mount_called
+    )
+
+    _make_dummy_env(
+        cwd="/workspace",
+        volumes=[f"{project}:/workspace"],
+        extra_args=["-v", f"{outside}:/leak"],
+        strict_mounts=True,
+        persist_across_processes=False,
+    )
+
+    run_call = next(
+        call[0]
+        for call in calls
+        if isinstance(call[0], list) and len(call[0]) >= 2 and call[0][1] == "run"
+    )
+    assert f"{project}:/workspace" in run_call
+    assert f"{outside}:/leak" not in run_call
 
 
 def test_credential_mount_skipped_when_source_is_directory(monkeypatch, tmp_path, caplog):

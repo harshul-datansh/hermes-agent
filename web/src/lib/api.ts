@@ -54,6 +54,7 @@ function setSessionHeader(headers: Headers, token: string): void {
 // profile (legacy behavior). Calls that already carry an explicit profile
 // (e.g. ProfileBuilder writes) are left untouched — explicit beats global.
 let _managementProfile = "";
+let _managementProjectId = "";
 
 export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
@@ -61,6 +62,15 @@ export function setManagementProfile(name: string): void {
 
 export function getManagementProfile(): string {
   return _managementProfile;
+}
+
+/** The authorized PM-OS project that owns the current core-dashboard scope. */
+export function setManagementProjectId(projectId: string): void {
+  _managementProjectId = (projectId || "").trim();
+}
+
+export function getManagementProjectId(): string {
+  return _managementProjectId;
 }
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
@@ -99,18 +109,34 @@ function withManagementProfile(url: string): string {
   return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
 }
 
+function withManagementProject(url: string): string {
+  if (!_managementProjectId || !url.startsWith("/api/") || url.includes("project_id=")) return url;
+  const separator = url.includes("?") ? "&" : "?";
+  return `${url}${separator}project_id=${encodeURIComponent(_managementProjectId)}`;
+}
+
 export async function fetchJSON<T>(
   url: string,
   init?: RequestInit,
   options?: FetchJSONOptions,
 ): Promise<T> {
-  url = withManagementProfile(url);
+  url = withManagementProject(withManagementProfile(url));
   // Inject the session token into all /api/ requests.
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
     setSessionHeader(headers, token);
   }
+  // PMO has a handful of deliberate portfolio views that can issue a request
+  // for a project other than the host shell's current selection.  An explicit
+  // ``project_id`` on that request is authoritative; mirror it into the header
+  // so the server never receives two disagreeing project identities.
+  const explicitProjectId = (() => {
+    try { return new URL(url, window.location.origin).searchParams.get("project_id") ?? ""; }
+    catch { return ""; }
+  })();
+  const requestProjectId = explicitProjectId || _managementProjectId;
+  if (requestProjectId) headers.set("X-Datansh-Project-Id", requestProjectId);
   const res = await fetch(`${BASE}${url}`, {
     ...init,
     headers,
@@ -250,6 +276,12 @@ export async function authedFetch(
   if (token) {
     setSessionHeader(headers, token);
   }
+  const explicitProjectId = (() => {
+    try { return new URL(url, window.location.origin).searchParams.get("project_id") ?? ""; }
+    catch { return ""; }
+  })();
+  const requestProjectId = explicitProjectId || _managementProjectId;
+  if (requestProjectId) headers.set("X-Datansh-Project-Id", requestProjectId);
   return fetch(`${BASE}${url}`, {
     ...init,
     headers,
@@ -277,7 +309,9 @@ export async function buildWsUrl(
   return buildHermesWebSocketUrl({
     authParam: await buildWsAuthParam(),
     basePath: BASE,
-    params,
+    params: _managementProjectId
+      ? { ...params, project_id: params?.project_id ?? _managementProjectId }
+      : params,
     path,
   });
 }
@@ -336,6 +370,10 @@ function appendSessionFilters(url: string, options: SessionQueryOptions): string
 
 export const api = {
   buildWsUrl,
+  getDashboardProjects: () =>
+    fetchJSON<{ projects: Array<{ id: string; slug: string; name: string; profile: string }> }>(
+      "/api/plugins/pmo/projects",
+    ),
   getStatus: () => fetchJSON<StatusResponse>("/api/status"),
   /**
    * Identity probe for the dashboard auth gate (Phase 7).
@@ -434,7 +472,9 @@ export const api = {
   getSessionStats: (profile = getManagementProfile()) =>
     fetchJSON<SessionStoreStats>(appendProfileParam("/api/sessions/stats", profile)),
   exportSessionUrl: (id: string, profile = getManagementProfile()) =>
-    appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
+    withManagementProject(
+      appendProfileParam(`/api/sessions/${encodeURIComponent(id)}/export`, profile),
+    ),
   importSessions: (
     sessions: Array<Record<string, unknown>>,
     profile = getManagementProfile(),

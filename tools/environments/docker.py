@@ -39,6 +39,11 @@ _DOCKER_SEARCH_PATHS = [
 _docker_executable: Optional[str] = None  # resolved once, cached
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _EGRESS_LABEL_KEY = "hermes-egress"
+_MOUNT_PROFILE_LABEL_KEY = "hermes-mount-profile"
+
+
+class _StrictMountSkip(Exception):
+    """Internal control flow for an intentionally empty implicit mount set."""
 
 
 def _normalize_forward_env_names(forward_env: list[str] | None) -> list[str]:
@@ -571,6 +576,31 @@ def _egress_reuse_fingerprint(
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
 
 
+def _mount_reuse_fingerprint(
+    image: str,
+    cwd: str,
+    writable_args: list[str],
+    volume_args: list[str],
+) -> str:
+    """Stable, non-secret identity for a container's filesystem boundary.
+
+    Docker bind mounts cannot be changed after creation.  Including this
+    fingerprint in the reuse query prevents an older task container from
+    being reused after its project/repository mount set changes.
+    """
+    payload = json.dumps(
+        {
+            "image": image,
+            "cwd": cwd,
+            "writable_args": writable_args,
+            "volume_args": volume_args,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:24]
+
+
 def _egress_enforce_on_docker(default: bool = True) -> bool:
     """Read proxy.enforce_on_docker with fail-safe defaulting."""
     try:
@@ -870,6 +900,7 @@ class DockerEnvironment(BaseEnvironment):
         extra_args: list = None,
         persist_across_processes: bool = True,
         shm_size: str = _DEFAULT_SHM_SIZE,
+        strict_mounts: bool = False,
     ):
         if cwd == "~":
             cwd = "/root"
@@ -886,6 +917,7 @@ class DockerEnvironment(BaseEnvironment):
         self._container_name: str = ""
         self._image_uses_s6_init: bool = False
         self._all_run_args: list[str] = []
+        self._strict_mounts = bool(strict_mounts)
         logger.info("DockerEnvironment volumes: %s", volumes)
         # Ensure volumes is a list (config.yaml could be malformed)
         if volumes is not None and not isinstance(volumes, list):
@@ -989,7 +1021,12 @@ class DockerEnvironment(BaseEnvironment):
 
         # Mount credential files (OAuth tokens, etc.) declared by skills.
         # Read-only so the container can authenticate but not modify host creds.
+        # A bounded per-task sandbox opts out: its caller supplied the complete
+        # mount set and implicit profile/cache mounts could expose another
+        # project's material.
         try:
+            if self._strict_mounts:
+                raise _StrictMountSkip()
             from tools.credential_files import (
                 get_credential_file_mounts,
                 get_skills_directory_mount,
@@ -1064,6 +1101,8 @@ class DockerEnvironment(BaseEnvironment):
                     cache_mount["host_path"],
                     cache_mount["container_path"],
                 )
+        except _StrictMountSkip:
+            logger.info("Docker: strict mount mode skips credential, skill, and cache mounts")
         except Exception as e:
             logger.debug("Docker: could not load credential file mounts: %s", e)
 
@@ -1302,7 +1341,7 @@ class DockerEnvironment(BaseEnvironment):
         # User-supplied extra docker run flags (docker_extra_args in config.yaml).
         # Appended last so they can override defaults if needed.
         validated_extra = []
-        for arg in (extra_args or []):
+        for arg in (() if self._strict_mounts else (extra_args or [])):
             if not isinstance(arg, str):
                 logger.warning("Ignoring non-string docker_extra_args entry: %r", arg)
                 continue
@@ -1349,11 +1388,15 @@ class DockerEnvironment(BaseEnvironment):
         # container-start time and never changes for the container's lifetime.
         profile_name = _sanitize_label_value(_get_active_profile_name())
         task_label = _sanitize_label_value(task_id)
+        mount_profile = _mount_reuse_fingerprint(
+            image, cwd, writable_args, volume_args,
+        )
         label_args = [
             "--label", "hermes-agent=1",
             "--label", f"hermes-task-id={task_label}",
             "--label", f"hermes-profile={profile_name}",
             "--label", f"{_EGRESS_LABEL_KEY}={egress_label}",
+            "--label", f"{_MOUNT_PROFILE_LABEL_KEY}={mount_profile}",
         ]
         # Save args for container recreation on "No such container" recovery.
         self._image = image
@@ -1366,6 +1409,7 @@ class DockerEnvironment(BaseEnvironment):
             "hermes-task-id": task_label,
             "hermes-profile": profile_name,
             _EGRESS_LABEL_KEY: egress_label,
+            _MOUNT_PROFILE_LABEL_KEY: mount_profile,
         }
 
         # Cross-process container reuse (issue #20561 — docs claim "ONE long-lived
@@ -1382,7 +1426,7 @@ class DockerEnvironment(BaseEnvironment):
         reused = False
         if persist_across_processes:
             existing = self._find_reusable_container(
-                task_label, profile_name, egress_label,
+                task_label, profile_name, egress_label, mount_profile,
             )
             if existing is not None:
                 container_id, state = existing
@@ -1642,7 +1686,10 @@ class DockerEnvironment(BaseEnvironment):
         task_label = self._labels.get("hermes-task-id", "")
         profile_label = self._labels.get("hermes-profile", "")
         existing = self._find_reusable_container(
-            task_label, profile_label, self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            task_label,
+            profile_label,
+            self._labels.get(_EGRESS_LABEL_KEY, "off"),
+            self._labels.get(_MOUNT_PROFILE_LABEL_KEY, "unknown"),
         )
         if existing is not None:
             cid, state = existing
@@ -1807,6 +1854,7 @@ class DockerEnvironment(BaseEnvironment):
         task_label: str,
         profile_label: str,
         egress_label: str,
+        mount_profile: str,
     ) -> Optional[tuple[str, str]]:
         """Look for an existing container labeled for this (task, profile).
 
@@ -1825,6 +1873,7 @@ class DockerEnvironment(BaseEnvironment):
                 "--filter", "label=hermes-agent=1",
                 "--filter", f"label=hermes-task-id={task_label}",
                 "--filter", f"label=hermes-profile={profile_label}",
+                "--filter", f"label={_MOUNT_PROFILE_LABEL_KEY}={mount_profile}",
             ]
             if egress_label != "off":
                 filters.extend(["--filter", f"label={_EGRESS_LABEL_KEY}={egress_label}"])

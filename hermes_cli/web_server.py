@@ -310,7 +310,16 @@ def _get_pty_active_session_files(app: "FastAPI") -> dict[str, Path]:
         return app.state.pty_active_session_files
 
 
-app = FastAPI(title="Hermes Agent", version=__version__, lifespan=_lifespan)
+# ``/docs`` belongs to the dashboard's Documentation screen. Keep FastAPI's
+# developer console available under the API namespace so it cannot shadow the
+# SPA route and make the sidebar open Swagger instead of Hermes documentation.
+app = FastAPI(
+    title="Hermes Agent",
+    version=__version__,
+    lifespan=_lifespan,
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
+)
 
 # Memory-provider OAuth connect routes live in the memory layer, not here.
 from hermes_cli.memory_oauth import router as _memory_oauth_router  # noqa: E402
@@ -644,7 +653,20 @@ async def _plugin_api_runtime_gate(request: Request, call_next):
 @app.middleware("http")
 async def _dashboard_auth_gate(request: Request, call_next):
     from hermes_cli.dashboard_auth.middleware import gated_auth_middleware
-    return await gated_auth_middleware(request, call_next)
+
+    async def authenticated_project_request(authenticated_request: Request):
+        """Run project authorization after the OAuth gate attaches identity."""
+        return await _project_scoped_core_request(authenticated_request, call_next)
+
+    carries_project = bool(
+        (request.headers.get("X-Datansh-Project-Id") or "").strip()
+        or (request.query_params.get("project_id") or "").strip()
+    )
+    return await gated_auth_middleware(
+        request,
+        authenticated_project_request,
+        force_auth=carries_project,
+    )
 
 
 @app.middleware("http")
@@ -668,6 +690,72 @@ async def auth_middleware(request: Request, call_next):
                 status_code=401,
                 content={"detail": "Unauthorized"},
             )
+    return await call_next(request)
+
+
+async def _project_scoped_core_request(request: Request, call_next):
+    """Validate and expose the project carried by every core dashboard call.
+
+    PM-OS owns project membership.  The inherited Hermes endpoints keep their
+    route contracts, but requests with ``project_id``/``X-Datansh-Project-Id``
+    must name an authorized, configured project.  The UI also maps this to the
+    project's dedicated profile; recording it on request state gives core
+    handlers and future extensions one canonical project identity.
+    """
+    if not request.url.path.startswith("/api/"):
+        return await call_next(request)
+    header_id = (request.headers.get("X-Datansh-Project-Id") or "").strip()
+    query_id = (request.query_params.get("project_id") or "").strip()
+    if header_id and query_id and header_id != query_id:
+        return JSONResponse(status_code=400, content={"detail": "Conflicting project scope"})
+    project_id = header_id or query_id
+    if not project_id:
+        return await call_next(request)
+    try:
+        from hermes_cli import kanban_db, projects_db
+        from plugins.pmo.access_policy import evaluate, principal_from_connection
+        from plugins.pmo.project_scope import resolve
+
+        principal = principal_from_connection(request)
+        if principal is None:
+            return JSONResponse(status_code=401, content={"detail": "Unauthorized"})
+        with projects_db.connect_closing() as project_connection:
+            project = projects_db.get_project(project_connection, project_id)
+        if project is None or not project.board_slug:
+            return JSONResponse(status_code=403, content={"detail": "Project access denied"})
+        scope = resolve(project.id, board_slug=project.board_slug)
+        if not evaluate(principal, "project.read", scope, write_audit=False).allowed:
+            return JSONResponse(status_code=403, content={"detail": "Project access denied"})
+        requested_profile = (request.query_params.get("profile") or "").strip()
+        expected_profile = scope.config.orchestrator.profile
+        if (
+            requested_profile
+            and requested_profile.lower() != "current"
+            and requested_profile.casefold() != expected_profile.casefold()
+        ):
+            return JSONResponse(
+                status_code=403,
+                content={"detail": "Profile does not belong to the selected project"},
+            )
+        request.state.datansh_project_id = scope.project_id
+        request.state.datansh_project_slug = scope.slug
+        request.state.datansh_project_profile = expected_profile
+        request.state.datansh_project_scope = scope
+        # PMO's copied Kanban routes use ``board`` as their native selector.
+        # Once the host supplies a project id, that legacy selector may only
+        # name the board bound to the same project.  Enforcing this here keeps
+        # every existing read/write handler project-safe without replacing
+        # Hermes' Kanban implementation.
+        requested_board = (request.query_params.get("board") or "").strip()
+        if request.url.path.startswith("/api/plugins/pmo/") and requested_board:
+            normalized_board = kanban_db._normalize_board_slug(requested_board)
+            if normalized_board != scope.board_slug:
+                return JSONResponse(
+                    status_code=403,
+                    content={"detail": "Board does not belong to the selected project"},
+                )
+    except Exception:
+        return JSONResponse(status_code=403, content={"detail": "Project access denied"})
     return await call_next(request)
 
 
@@ -1738,6 +1826,7 @@ class ManagedFilesPolicy:
     default_path: Path
     locked_root: Path | None
     can_change_path: bool
+    allowed_roots: tuple[Path, ...] | None = None
 
 
 _FS_READDIR_HIDDEN = {
@@ -2154,6 +2243,22 @@ def _dashboard_local_update_managed_externally() -> bool:
 
 
 def _managed_files_policy(request: Request, *, create_root: bool = True) -> ManagedFilesPolicy:
+    project_scope = getattr(
+        getattr(request, "state", None), "datansh_project_scope", None
+    )
+    if project_scope is not None:
+        default_root = _canonical_path(project_scope.workspace, require_exists=True)
+        allowed_roots = tuple(
+            _canonical_path(folder, require_exists=True)
+            for folder in project_scope.folders
+        )
+        return ManagedFilesPolicy(
+            default_path=default_root,
+            locked_root=default_root,
+            can_change_path=False,
+            allowed_roots=allowed_roots,
+        )
+
     raw_forced_root = os.environ.get(_MANAGED_FILES_ROOT_ENV, "").strip()
     if raw_forced_root:
         root = _ensure_managed_root(raw_forced_root) if create_root else _canonical_path(Path(raw_forced_root))
@@ -2204,7 +2309,8 @@ def _resolve_managed_path(
     else:
         resolved = _canonical_path(candidate, require_exists=not for_write)
 
-    if root is not None and not _path_is_under(root, resolved):
+    allowed_roots = policy.allowed_roots or ((root,) if root is not None else ())
+    if allowed_roots and not any(_path_is_under(item, resolved) for item in allowed_roots):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
     return policy, resolved, str(resolved)
@@ -2216,6 +2322,7 @@ def _managed_response_meta(policy: ManagedFilesPolicy) -> Dict[str, Any]:
         "root": locked_root,
         "locked_root": locked_root,
         "can_change_path": policy.can_change_path,
+        "roots": [str(path) for path in (policy.allowed_roots or ())],
     }
 
 
@@ -2224,7 +2331,10 @@ def _managed_file_entry(policy: ManagedFilesPolicy, target: Path) -> Dict[str, A
         resolved = target.resolve()
     except (OSError, RuntimeError):
         raise HTTPException(status_code=400, detail="Invalid path")
-    if policy.locked_root is not None and not _path_is_under(policy.locked_root, resolved):
+    allowed_roots = policy.allowed_roots or (
+        (policy.locked_root,) if policy.locked_root is not None else ()
+    )
+    if allowed_roots and not any(_path_is_under(item, resolved) for item in allowed_roots):
         raise HTTPException(status_code=403, detail="Path outside managed files root")
 
     try:
@@ -2983,6 +3093,20 @@ def _collect_profile_gateway_topology_cached() -> Dict[str, Any]:
         return data
 
 
+def _profile_served_by_live_gateway(
+    profile: str, topology: Dict[str, Any]
+) -> bool:
+    """Return whether a live gateway explicitly serves ``profile``."""
+    requested = str(profile or "").strip()
+    if not requested:
+        return False
+    return any(
+        requested in (gateway.get("served_profiles") or [])
+        for gateway in topology.get("gateways", [])
+        if isinstance(gateway, dict)
+    )
+
+
 def _load_configured_gateway_platforms() -> set[str]:
     """Load connected platform names away from the asyncio event loop.
 
@@ -3092,6 +3216,21 @@ async def get_status(profile: Optional[str] = None):
         gateway_pid = liveness.pid
         remote_health_body: dict | None = liveness.health_body
 
+        # A named profile does not own a PID/state file when the default
+        # gateway is running in profile-multiplexer mode.  It is nevertheless
+        # fully served by that live process.  Treat membership in a live
+        # gateway's ``served_profiles`` list as liveness for the requested
+        # profile so the dashboard does not report "Gateway off" (and disable
+        # gateway-backed controls) merely because there is no second process.
+        topology: Dict[str, Any] | None = None
+        if requested_profile and not gateway_running:
+            topology = await run_in_threadpool(
+                _collect_profile_gateway_topology_cached
+            )
+            gateway_running = _profile_served_by_live_gateway(
+                requested_profile, topology
+            )
+
         gateway_state = None
         gateway_platforms: dict = {}
         gateway_exit_reason = None
@@ -3137,7 +3276,7 @@ async def get_status(profile: Optional[str] = None):
 
         # If there was no runtime info at all but the health probe confirmed alive,
         # ensure we still report the gateway as running (no shared volume scenario).
-        if gateway_running and gateway_state is None and remote_health_body is not None:
+        if gateway_running and gateway_state is None:
             gateway_state = "running"
 
         active_sessions = await _status_active_sessions()
@@ -3319,9 +3458,10 @@ async def get_status(profile: Optional[str] = None):
         # the network (a gated bind), so they must survive the auth gate. The
         # per-gateway ``gateways[]`` detail carries host ports (deployment
         # recon), so it stays gated with the host paths / PID below.
-        topology = await asyncio.get_running_loop().run_in_executor(
-            None, _collect_profile_gateway_topology_cached
-        )
+        if topology is None:
+            topology = await asyncio.get_running_loop().run_in_executor(
+                None, _collect_profile_gateway_topology_cached
+            )
         status["profiles"] = topology["profiles"]
         status["gateway_mode"] = topology["gateway_mode"]
 
@@ -4603,6 +4743,9 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
     """
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
+        return
+    if _ws_project_scope_reason(ws) is not None:
+        await ws.close(code=4403)
         return
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
@@ -8231,6 +8374,7 @@ def _messaging_platform_payload(
     runtime: dict | None,
     scoped: bool = False,
     profile_home: Optional[Path] = None,
+    gateway_running_override: Optional[bool] = None,
 ) -> dict[str, Any]:
     platform_id = entry["id"]
     runtime_platforms = runtime.get("platforms") if runtime else {}
@@ -8261,7 +8405,11 @@ def _messaging_platform_payload(
         runtime_reader=read_runtime_status,
         runtime_pid_probe=get_runtime_status_running_pid,
     )
-    gateway_running = liveness.running
+    gateway_running = (
+        liveness.running
+        if gateway_running_override is None
+        else gateway_running_override
+    )
     env_vars = []
 
     for key in entry["env_vars"]:
@@ -9273,6 +9421,14 @@ async def get_messaging_platforms(profile: Optional[str] = None):
             if scoped_dir is not None
             else read_runtime_status()
         )
+        requested_profile = (profile or "").strip()
+        gateway_running_override: Optional[bool] = None
+        if scoped_dir is not None and requested_profile:
+            topology = await run_in_threadpool(
+                _collect_profile_gateway_topology_cached
+            )
+            if _profile_served_by_live_gateway(requested_profile, topology):
+                gateway_running_override = True
         return {
             "env_path": str(get_env_path()),
             "gateway_start_command": _gateway_display_command(profile, "start"),
@@ -9283,6 +9439,7 @@ async def get_messaging_platforms(profile: Optional[str] = None):
                     runtime,
                     scoped=scoped_dir is not None,
                     profile_home=scoped_dir,
+                    gateway_running_override=gateway_running_override,
                 )
                 for entry in _messaging_platform_catalog()
             ]
@@ -14641,6 +14798,21 @@ def _ws_auth_mode() -> str:
     return "loopback"
 
 
+def _record_ws_identity(ws: "WebSocket", *, user_id: str, kind: str) -> None:
+    """Attach verified WS identity when the ASGI connection exposes state.
+
+    Real Starlette WebSockets always do. A few narrow unit tests use a tiny
+    namespace that predates project scoping, so keep auth compatibility when
+    that optional state seam is absent.
+    """
+
+    state = getattr(ws, "state", None)
+    if state is None:
+        return
+    state.datansh_ws_user_id = str(user_id or "")
+    state.datansh_ws_principal_kind = str(kind or "human")
+
+
 def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     """Validate WS-upgrade auth; return ``(reason, credential)``.
 
@@ -14690,7 +14862,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
         internal = ws.query_params.get("internal", "")
         if internal:
             try:
-                consume_internal_credential(internal)
+                info = consume_internal_credential(internal)
+                _record_ws_identity(
+                    ws, user_id=str(info.get("user_id") or ""), kind="service"
+                )
                 return None, "internal"
             except TicketInvalid as exc:
                 audit_log(
@@ -14706,7 +14881,10 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
             return "no_credential", "none"
 
         try:
-            consume_ticket(ticket)
+            info = consume_ticket(ticket)
+            _record_ws_identity(
+                ws, user_id=str(info.get("user_id") or ""), kind="human"
+            )
             return None, "ticket"
         except TicketInvalid as exc:
             audit_log(
@@ -14721,6 +14899,9 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
     if not token:
         return "no_credential", "none"
     if hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        _record_ws_identity(
+            ws, user_id="dashboard:local-operator", kind="human"
+        )
         return None, "token"
     return "token_mismatch", "token"
 
@@ -14728,6 +14909,61 @@ def _ws_auth_reason(ws: "WebSocket") -> tuple[Optional[str], str]:
 def _ws_auth_ok(ws: "WebSocket") -> bool:
     """True when the WS-upgrade credential is accepted. See _ws_auth_reason."""
     return _ws_auth_reason(ws)[0] is None
+
+
+def _ws_project_scope_reason(ws: "WebSocket") -> Optional[str]:
+    """Validate a project/profile/board tuple on browser WebSockets.
+
+    HTTP middleware does not run for WebSocket upgrades. The SPA includes
+    ``project_id`` on inherited Chat/Console/event sockets, so repeat the same
+    project membership and dedicated-profile checks before accepting them.
+    Sockets without a project selector retain the upstream Hermes contract;
+    server-internal sidecars also remain unaffected.
+    """
+
+    project_id = str(ws.query_params.get("project_id") or "").strip()
+    if not project_id:
+        return None
+    raw_identity = str(getattr(ws.state, "datansh_ws_user_id", "") or "").strip()
+    kind = str(
+        getattr(ws.state, "datansh_ws_principal_kind", "human") or "human"
+    ).strip()
+    if not raw_identity:
+        return "project_identity_missing"
+    try:
+        from hermes_cli import kanban_db, projects_db
+        from plugins.pmo.access_policy import Principal, evaluate
+        from plugins.pmo.project_scope import resolve
+
+        principal_id = raw_identity
+        if kind == "human" and not principal_id.startswith(("human:", "dashboard:")):
+            principal_id = f"human:{principal_id}"
+        principal = Principal(principal_id, kind)
+        with projects_db.connect_closing() as connection:
+            project = projects_db.get_project(connection, project_id)
+        if project is None or not project.board_slug:
+            return "project_access_denied"
+        scope = resolve(project.id, board_slug=project.board_slug)
+        if not evaluate(principal, "project.read", scope, write_audit=False).allowed:
+            return "project_access_denied"
+        requested_profile = str(ws.query_params.get("profile") or "").strip()
+        expected_profile = scope.config.orchestrator.profile
+        if (
+            requested_profile
+            and requested_profile.lower() != "current"
+            and requested_profile.casefold() != expected_profile.casefold()
+        ):
+            return "project_profile_mismatch"
+        requested_board = str(ws.query_params.get("board") or "").strip()
+        if requested_board:
+            normalized_board = kanban_db._normalize_board_slug(requested_board)
+            if normalized_board != scope.board_slug:
+                return "project_board_mismatch"
+        ws.state.datansh_project_id = scope.project_id
+        ws.state.datansh_project_scope = scope
+        return None
+    except Exception:
+        return "project_access_denied"
 
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
@@ -15290,6 +15526,12 @@ async def console_ws(ws: WebSocket) -> None:
         await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
 
+    project_reason = _ws_project_scope_reason(ws)
+    if project_reason is not None:
+        _log.warning("console project scope rejected reason=%s peer=%s", project_reason, peer)
+        await ws.close(code=4403, reason=_ws_close_reason(project_reason))
+        return
+
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("console refused: %s peer=%s", host_origin_reason, peer)
@@ -15646,6 +15888,12 @@ async def pty_ws(ws: WebSocket) -> None:
         await ws.close(code=4401, reason=_ws_close_reason(f"auth: {auth_reason}"))
         return
 
+    project_reason = _ws_project_scope_reason(ws)
+    if project_reason is not None:
+        _log.warning("pty project scope rejected reason=%s peer=%s", project_reason, peer)
+        await ws.close(code=4403, reason=_ws_close_reason(project_reason))
+        return
+
     host_origin_reason = _ws_host_origin_reason(ws)
     if host_origin_reason is not None:
         _log.warning("pty refused: %s peer=%s", host_origin_reason, peer)
@@ -15818,6 +16066,10 @@ async def gateway_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
+    if _ws_project_scope_reason(ws) is not None:
+        await ws.close(code=4403)
+        return
+
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
@@ -15849,6 +16101,10 @@ async def pub_ws(ws: WebSocket) -> None:
         await ws.close(code=4401)
         return
 
+    if _ws_project_scope_reason(ws) is not None:
+        await ws.close(code=4403)
+        return
+
     if not _ws_request_is_allowed(ws):
         await ws.close(code=4403)
         return
@@ -15875,6 +16131,9 @@ async def events_ws(ws: WebSocket) -> None:
 
     if not _ws_auth_ok(ws):
         await ws.close(code=4401)
+        return
+    if _ws_project_scope_reason(ws) is not None:
+        await ws.close(code=4403)
         return
 
     if not _ws_request_is_allowed(ws):

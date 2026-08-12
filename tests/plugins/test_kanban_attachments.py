@@ -268,7 +268,9 @@ def test_cli_attach_attachments_and_rm(kanban_home, tmp_path):
     src = tmp_path / "upload.txt"
     src.write_bytes(b"cli file body")
 
-    out = run_slash(f"attach {task_id} {src}")
+    # ``run_slash`` uses POSIX tokenization; forward slashes keep this fixture
+    # portable on Windows without changing the inherited CLI implementation.
+    out = run_slash(f"attach {task_id} {src.as_posix()}")
     assert "Attached" in out, out
 
     conn = kb.connect()

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { api, fetchJSON } from "./api";
+import { api, fetchJSON, setManagementProjectId } from "./api";
 
 const reloadMocks = vi.hoisted(() => ({
   attemptDashboardTokenReloadOnce: vi.fn(() => false),
@@ -16,6 +16,7 @@ vi.mock("./dashboard-auth-reload", () => ({
 const SESSION_HEADER = "X-Hermes-Session-Token";
 
 beforeEach(() => {
+  setManagementProjectId("");
   reloadMocks.attemptDashboardTokenReloadOnce.mockReset();
   reloadMocks.attemptDashboardTokenReloadOnce.mockReturnValue(false);
   reloadMocks.clearDashboardTokenReloadAttempt.mockReset();
@@ -33,6 +34,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  setManagementProjectId("");
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
@@ -48,6 +50,21 @@ function jsonFetchMock(body: unknown = { ok: true }) {
 }
 
 describe("fetchJSON", () => {
+  it("uses an explicit target project for portfolio-owned requests", async () => {
+    setManagementProjectId("project-shell");
+    const fetchMock = jsonFetchMock();
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchJSON("/api/plugins/pmo/tasks?board=target&project_id=project-target");
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe("/api/plugins/pmo/tasks?board=target&project_id=project-target");
+    expect((init?.headers as Headers).get("X-Datansh-Project-Id")).toBe(
+      "project-target",
+    );
+  });
+
   it("tries the one-shot reload path for loopback 401s", async () => {
     vi.stubGlobal(
       "fetch",

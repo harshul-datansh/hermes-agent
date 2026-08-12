@@ -1102,6 +1102,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
         _resolve_container_task_id,
         _is_unusable_container_cwd,
         _CONTAINER_BACKENDS,
+        _apply_task_config_overrides,
     )
     import time
 
@@ -1153,8 +1154,14 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             from tools.terminal_tool import resolve_task_overrides
 
             config = _get_env_config()
-            env_type = config["env_type"]
+            base_config_cwd = config["cwd"]
             overrides = resolve_task_overrides(raw_task_id)
+            # Keep file tools on the same task-specific backend as terminal.
+            # PMO registers a Docker sandbox per project; ignoring env_type
+            # here would create a local shell at the container-only
+            # ``/workspace`` path and silently fall back to the host root.
+            config = _apply_task_config_overrides(config, overrides)
+            env_type = config["env_type"]
 
             if env_type == "docker":
                 image = overrides.get("docker_image") or config["docker_image"]
@@ -1192,7 +1199,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                         "(won't exist in sandbox). Using %r instead.",
                         cwd, env_type, config["cwd"],
                     )
-                cwd = config["cwd"]
+                cwd = base_config_cwd
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
@@ -1206,8 +1213,15 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_env": config.get("docker_env", {}),
+                    "docker_extra_args": config.get("docker_extra_args", []),
                     "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
                     "docker_network": config.get("docker_network", True),
+                    "docker_persist_across_processes": config.get(
+                        "docker_persist_across_processes", True
+                    ),
+                    "docker_shm_size": config.get("docker_shm_size", "1g"),
+                    "docker_strict_mounts": config.get("docker_strict_mounts", False),
                 }
 
             ssh_config = None

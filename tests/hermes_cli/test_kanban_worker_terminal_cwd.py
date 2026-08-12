@@ -63,6 +63,7 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     (root / "profiles" / "w" / "config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     root.joinpath("config.yaml").write_text("toolsets:\n  - kanban\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.delenv("PYTHONPATH", raising=False)
 
     from hermes_cli import kanban_db as kb
 
@@ -75,5 +76,6 @@ def test_terminal_cwd_pinned_to_workspace(monkeypatch, tmp_path):
     # The subprocess cwd and TERMINAL_CWD must agree — both anchor the workspace.
     assert captured["cwd"] == str(workspace)
     assert captured["env"]["HERMES_KANBAN_WORKSPACE"] == str(workspace)
+    assert captured["env"]["PYTHONPATH"] == str(kb.Path(kb.__file__).resolve().parent.parent)
 
 

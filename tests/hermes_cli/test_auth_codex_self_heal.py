@@ -92,3 +92,33 @@ def test_self_heals_missing_singleton_access_token_from_codex_cli(tmp_path, monk
     assert tokens["refresh_token"] == "fresh-refresh"
 
 
+def test_self_heals_empty_project_auth_store_from_codex_cli(tmp_path, monkeypatch):
+    """A fresh project profile inherits the signed-in Codex CLI session."""
+    hermes_home = tmp_path / "project-hermes"
+    codex_home = tmp_path / "codex"
+    hermes_home.mkdir()
+    codex_home.mkdir()
+    (hermes_home / "auth.json").write_text(json.dumps({
+        "version": 1,
+        "active_provider": "openai-codex",
+        "providers": {},
+    }))
+    (codex_home / "auth.json").write_text(json.dumps({
+        "tokens": {
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+        },
+    }))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    resolved = resolve_codex_runtime_credentials()
+
+    assert resolved["api_key"] == "fresh-access"
+    assert resolved["source"] == "hermes-auth-store"
+    stored = json.loads((hermes_home / "auth.json").read_text())
+    tokens = stored["providers"]["openai-codex"]["tokens"]
+    assert tokens["access_token"] == "fresh-access"
+    assert tokens["refresh_token"] == "fresh-refresh"
+
+

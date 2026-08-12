@@ -183,6 +183,13 @@ class SessionSource:
     # namespacing and the per-turn config/credential scope.
     profile: Optional[str] = None
 
+    # Internal, wire-INVISIBLE working-directory override selected by a local
+    # adapter for this turn.  It is deliberately not serialized by to_dict /
+    # from_dict: remote peers must never be able to choose a host filesystem
+    # path.  Local project-aware adapters can use it to pin the existing
+    # session-cwd ContextVar without mutating process-global TERMINAL_CWD.
+    runtime_cwd: Optional[str] = None
+
     # Discord auto-thread metadata.  Newly auto-created Discord threads start
     # with a fast placeholder title from the raw message, then the gateway can
     # rename them after the first agent turn using the generated session title.

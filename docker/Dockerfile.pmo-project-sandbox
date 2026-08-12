@@ -1,0 +1,21 @@
+# Project terminal runtime for Datansh PM-OS.
+#
+# Keep the upstream Hermes runtime and layer only the additive PMO plugin and
+# skill payload. Project data is never copied into the image; the terminal
+# runtime bind-mounts one validated project at /workspace.
+FROM nousresearch/hermes-agent:latest
+
+USER root
+COPY plugins/pmo/ /opt/hermes/plugins/pmo/
+COPY plugins/platforms/pmo/ /opt/hermes/plugins/platforms/pmo/
+COPY skills/productivity/datansh-pm-os/ /opt/hermes/skills/productivity/datansh-pm-os/
+
+# DockerEnvironment initializes its shell with `bash -l`; Debian's profile
+# rebuilds PATH for login shells, so preserve the Hermes executables there.
+RUN printf '%s\n' \
+    'export PATH=/opt/hermes/bin:/opt/hermes/.venv/bin:/opt/data/.local/bin:$PATH' \
+    > /etc/profile.d/datansh-hermes-path.sh
+
+ENV HERMES_HOME=/opt/data
+WORKDIR /workspace
+

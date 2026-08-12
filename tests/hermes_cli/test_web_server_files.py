@@ -88,6 +88,35 @@ def _seed_file(client, root, name="out/hello.txt"):
     return file_path
 
 
+def test_project_scope_locks_files_to_registered_folders(tmp_path):
+    primary = tmp_path / "primary"
+    sibling_repo = tmp_path / "sibling-repo"
+    outside = tmp_path / "outside"
+    for path in (primary, sibling_repo, outside):
+        path.mkdir()
+    request = SimpleNamespace(
+        state=SimpleNamespace(
+            datansh_project_scope=SimpleNamespace(
+                workspace=primary,
+                folders=(primary, sibling_repo),
+            )
+        )
+    )
+
+    policy = web_server._managed_files_policy(request)
+    assert policy.default_path == primary.resolve()
+    assert policy.can_change_path is False
+    assert policy.allowed_roots == (primary.resolve(), sibling_repo.resolve())
+    assert web_server._resolve_managed_path(None, request)[1] == primary.resolve()
+    assert (
+        web_server._resolve_managed_path(str(sibling_repo), request)[1]
+        == sibling_repo.resolve()
+    )
+    with pytest.raises(web_server.HTTPException) as denied:
+        web_server._resolve_managed_path(str(outside), request)
+    assert denied.value.status_code == 403
+
+
 
 
 def test_download_authenticates_via_query_token(forced_files_client):

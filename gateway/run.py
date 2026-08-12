@@ -21094,7 +21094,8 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
         _adapters = getattr(self, "adapters", None) or {}
         _adapter = _adapters.get(context.source.platform)
         _async_delivery = getattr(_adapter, "supports_async_delivery", True)
-        return set_session_vars(
+        runtime_cwd = getattr(context.source, "runtime_cwd", "") or ""
+        tokens = set_session_vars(
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_type=(
@@ -21107,9 +21108,19 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             session_key=context.session_key,
             message_id=str(context.source.message_id) if context.source.message_id else "",
             profile=getattr(context.source, "profile", "") or "",
+            cwd=runtime_cwd,
             async_delivery=_async_delivery,
             cron_session="",
         )
+        if runtime_cwd:
+            # Keep the terminal's existing per-session cwd record aligned with
+            # the ContextVar used by file tools and context discovery.  This is
+            # session-local (keyed by the native gateway session), so concurrent
+            # project conversations never race through TERMINAL_CWD.
+            from tools.terminal_tool import record_session_cwd
+
+            record_session_cwd(context.session_key, runtime_cwd)
+        return tokens
 
     def _clear_session_env(self, tokens: list) -> None:
         """Restore session context variables to their pre-handler values."""

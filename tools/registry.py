@@ -249,9 +249,20 @@ def check_fn_cache_scope() -> Optional[str]:
     Single-profile processes intentionally keep the historical process-wide
     cache. A multiplex gateway installs a Hermes-home override for every
     profile turn, so the canonical profile key is the stable isolation
-    boundary across repeated turns for that profile.
+    boundary across repeated turns for that profile. Some tool availability
+    is instead explicitly tied to a gateway session profile (for example the
+    PM-only Founder's Office controls); that identity must also partition the
+    cache even in a non-multiplex test or host process.
     """
     try:
+        from gateway.session_context import get_session_env
+
+        session_profile = str(
+            get_session_env("HERMES_SESSION_PROFILE", "") or ""
+        ).strip()
+        if session_profile:
+            return f"session-profile:{session_profile.casefold()}"
+
         from agent.secret_scope import is_multiplex_active
 
         if not is_multiplex_active():

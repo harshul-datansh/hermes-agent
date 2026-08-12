@@ -1,0 +1,18 @@
+{
+  "name": "pmo",
+  "label": "Datansh PM-OS",
+  "description": "Project-management workspace built on the Hermes Kanban workflow",
+  "icon": "LayoutDashboard",
+  "version": "0.1.15",
+  "tab": {
+    "path": "/pmo",
+    "position": "before:kanban"
+  },
+  "slots": [
+    "header-left"
+  ],
+  "entry": "dist/index.js",
+  "integrity": "sha384-ookk3oauSImDhOslOMHG4w8sa6wqVx1cNKdsjd6FXZHsIXk93V9t3+5TT6h9Duf3",
+  "css": "dist/style.css",
+  "api": "plugin_api.py"
+}

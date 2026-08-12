@@ -1,0 +1,9 @@
+name: datansh-pm-os
+version: 0.1.0
+description: Additive project-management profile for the Datansh PM-OS board.
+hermes_requires: ">=0.20.0"
+author: Datansh
+license: MIT
+distribution_owned:
+  - SOUL.md
+  - skills/datansh-pm-os

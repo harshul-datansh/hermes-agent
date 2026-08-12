@@ -247,6 +247,31 @@ scripts/run_tests.sh
 
 ---
 
+## Datansh PM-OS
+
+This fork adds an additive project-management operating layer while retaining
+Hermes agents, memory, self-learning, delegation, messaging, tools, gateway,
+MCP, sessions, and the native Kanban dispatcher.
+
+Try a populated, isolated demo with no provider or model call:
+
+```bash
+hermes pmo demo
+```
+
+For a local dashboard with login protection across the Hermes shell, copied
+Kanban, and PM-OS pages, start the authenticated bind:
+
+```bash
+hermes dashboard --host 0.0.0.0 --port 8787 --no-open
+```
+
+For a real existing Git repository, run `hermes pmo setup --interactive`.
+See [PM-OS getting started](docs/pmo/getting-started.md) and the
+[PM-OS concepts](docs/pmo/concepts.md).
+
+---
+
 ## Community
 
 - 💬 [Discord](https://discord.gg/NousResearch)

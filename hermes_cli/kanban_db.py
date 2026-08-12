@@ -3001,6 +3001,24 @@ def create_task(
                 project_obj = _pdb.get_project(_pconn, project_id)
         except Exception:
             project_obj = None
+        if project_obj is None:
+            # PM-OS workers run in their dedicated profile homes.  The
+            # canonical project registration normally lives at the Hermes
+            # root, however, and losing that lookup silently persisted a
+            # project-less specialist conversation.  The root registry is a
+            # read-only fallback here; board/project checks still decide what
+            # the task may access or where it may run.
+            try:
+                from hermes_constants import get_default_hermes_root, get_hermes_home
+
+                root_projects = get_default_hermes_root() / "projects.db"
+                if root_projects.is_file() and root_projects.resolve() != (
+                    get_hermes_home() / "projects.db"
+                ).resolve():
+                    with _pdb.connect_closing(db_path=root_projects) as _root_conn:
+                        project_obj = _pdb.get_project(_root_conn, project_id)
+            except Exception:
+                project_obj = None
         if project_obj is None and project_source_task_id:
             # Worker profiles have their own projects.db, while the Kanban DB is
             # intentionally shared. Recover routing only from a canonical
@@ -8214,6 +8232,7 @@ def dispatch_once(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    candidate_filter_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick under the board's single-writer lock.
 
@@ -8248,6 +8267,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            candidate_filter_fn=candidate_filter_fn,
         )
     with _dispatch_tick_lock(db_path) as held:
         if not held:
@@ -8264,6 +8284,7 @@ def dispatch_once(
             board=board,
             default_assignee=default_assignee,
             max_in_progress_per_profile=max_in_progress_per_profile,
+            candidate_filter_fn=candidate_filter_fn,
         )
         # Still under the dispatch lock: opportunistically truncate the WAL
         # at a coarse interval so it cannot grow unbounded between restarts.
@@ -8284,6 +8305,7 @@ def _dispatch_once_locked(
     board: Optional[str] = None,
     default_assignee: Optional[str] = None,
     max_in_progress_per_profile: Optional[int] = None,
+    candidate_filter_fn=None,
 ) -> DispatchResult:
     """Run one dispatcher tick.
 
@@ -8413,6 +8435,17 @@ def _dispatch_once_locked(
             # bucket it as nonspawnable if the profile genuinely isn't
             # there, with the existing diagnostic.
             _default_assignee_resolved = True
+    if candidate_filter_fn is None:
+        # Datansh PM-OS installs an additive policy at the edge: ordinary
+        # Hermes boards return True, while project-managed boards reject a
+        # task/project/profile mismatch before the claim transition. Import
+        # lazily so upstream/native installations retain the same core path.
+        try:
+            from plugins.pmo.project_scope import dispatch_candidate_allowed
+
+            candidate_filter_fn = dispatch_candidate_allowed
+        except (ImportError, ModuleNotFoundError):
+            candidate_filter_fn = None
     for row in ready_rows:
         if max_spawn is not None and running_count + spawned >= max_spawn:
             break
@@ -8459,6 +8492,21 @@ def _dispatch_once_locked(
                 result.auto_assigned_default.append(row["id"])
             else:
                 result.skipped_unassigned.append(row["id"])
+                continue
+        if candidate_filter_fn is not None:
+            candidate = get_task(conn, row["id"])
+            try:
+                allowed = candidate is not None and bool(
+                    candidate_filter_fn(candidate, row_assignee, board)
+                )
+            except Exception:
+                allowed = False
+                _log.exception(
+                    "kanban dispatch candidate policy failed closed for task %s",
+                    row["id"],
+                )
+            if not allowed:
+                result.skipped_nonspawnable.append(row["id"])
                 continue
         # Skip ready tasks whose assignee is not a real Hermes profile.
         # `_default_spawn` invokes ``hermes -p <assignee>`` which fails
@@ -8854,8 +8902,6 @@ def _resolve_hermes_argv() -> list[str]:
     local (not imported from gateway) because ``hermes_cli`` sits below
     ``gateway`` in the dependency order.
     """
-    import shutil
-
     env_bin = os.environ.get("HERMES_BIN", "").strip()
     if env_bin:
         if _looks_like_path(env_bin):
@@ -8865,9 +8911,6 @@ def _resolve_hermes_argv() -> list[str]:
             return _hermes_path_argv(resolved_env_bin)
         return _module_hermes_argv()
 
-    hermes_bin = _safe_which_no_cwd("hermes") if _IS_WINDOWS else shutil.which("hermes")
-    if hermes_bin:
-        return _hermes_path_argv(hermes_bin)
     return _module_hermes_argv()
 
 
@@ -8989,6 +9032,20 @@ def _default_spawn(
 
     prompt = f"work kanban task {task.id}"
     env = dict(os.environ)
+    # The worker changes cwd to the task workspace. In a source checkout,
+    # ``python -m hermes_cli.main`` would otherwise stop seeing this checkout
+    # and import an older globally installed Hermes package. Pin the package
+    # root that owns this dispatcher so gateway and worker always execute the
+    # same code. For installed builds this is the existing site-packages root
+    # and is therefore harmless.
+    runtime_package_root = str(Path(__file__).resolve().parent.parent)
+    python_path_parts = [
+        item for item in str(env.get("PYTHONPATH") or "").split(os.pathsep) if item
+    ]
+    if runtime_package_root not in python_path_parts:
+        env["PYTHONPATH"] = os.pathsep.join(
+            [runtime_package_root, *python_path_parts]
+        )
     # The dispatcher is detached from every conversation. Its worker must never
     # inherit routing mirrored by a previous gateway turn, even before the first
     # session binds ContextVars in this process.

@@ -1,0 +1,5 @@
+name: datansh
+version: 0.1.0
+description: "Datansh project-owned multi-user password authentication"
+author: Datansh
+kind: backend

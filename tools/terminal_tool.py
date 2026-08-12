@@ -1229,14 +1229,26 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     per-task sandbox settings (e.g., a custom Dockerfile for the Modal image).
 
     Supported override keys:
+        - env_type: str -- Per-task execution backend
+        - sandbox_key: str -- Stable isolated environment key
         - modal_image: str -- Path to Dockerfile or Docker Hub image name
         - docker_image: str -- Docker image name
         - cwd: str -- Working directory inside the sandbox
+        - docker_volumes: list[str] -- Per-task Docker bind mounts
+        - docker_strict_mounts: bool -- Disable implicit host resource mounts
 
     Args:
         task_id: The rollout's unique task identifier
         overrides: Dict of config keys to override
     """
+    previous = _task_env_overrides.get(task_id) or {}
+    previous_sandbox_key = previous.get("sandbox_key")
+    sandbox_key = overrides.get("sandbox_key")
+    same_sandbox = (
+        isinstance(sandbox_key, str)
+        and bool(sandbox_key.strip())
+        and sandbox_key == previous_sandbox_key
+    )
     _task_env_overrides[task_id] = overrides
 
     # If a live environment already exists for this task, a freshly registered
@@ -1244,7 +1256,7 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     # mid-session via ``session/load`` / ``session/resume``) must take effect
     # immediately. The session record is what commands resolve against;
     # the live env's cwd is also updated so env-side seeding stays consistent.
-    new_cwd = overrides.get("cwd")
+    new_cwd = None if same_sandbox else overrides.get("cwd")
     if isinstance(new_cwd, str) and new_cwd.strip():
         # A registered workspace cwd IS the session's working directory until
         # a `cd` changes it.
@@ -1256,7 +1268,15 @@ def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
         # updates the originating session's env.
         container_id = _resolve_container_task_id(task_id)
         with _env_lock:
-            env = _active_environments.get(task_id) or _active_environments.get(container_id)
+            # An explicit sandbox_key is a hard isolation boundary.  Never
+            # reuse (or mutate) an environment cached under the raw session id
+            # when that session now resolves to a different sandbox key: it
+            # may be a pre-existing local/default environment.  The raw-id
+            # fallback exists only for legacy CWD-only sessions, which collapse
+            # to the shared "default" environment.
+            env = _active_environments.get(container_id)
+            if env is None and container_id == "default":
+                env = _active_environments.get(task_id)
         if env is not None and getattr(env, "cwd", None) is not None:
             env.cwd = new_cwd
 
@@ -1297,10 +1317,13 @@ def _resolve_container_task_id(task_id: Optional[str]) -> str:
     """
     _ISOLATION_KEYS = frozenset({
         "docker_image", "modal_image", "singularity_image",
-        "daytona_image", "env_type",
+        "daytona_image", "env_type", "sandbox_key",
     })
     if task_id and task_id in _task_env_overrides:
         overrides = _task_env_overrides[task_id]
+        sandbox_key = overrides.get("sandbox_key")
+        if isinstance(sandbox_key, str) and sandbox_key.strip():
+            return sandbox_key.strip()
         if set(overrides.keys()) & _ISOLATION_KEYS:
             return task_id
     return "default"
@@ -1324,6 +1347,64 @@ def resolve_task_overrides(task_id: Optional[str]) -> Dict[str, Any]:
         or _task_env_overrides.get(_resolve_container_task_id(raw))
         or {}
     )
+
+
+_TASK_CONFIG_OVERRIDE_KEYS = frozenset({
+    "env_type", "cwd", "host_cwd",
+    "docker_image", "docker_volumes", "docker_forward_env", "docker_env",
+    "docker_mount_cwd_to_workspace", "docker_run_as_host_user",
+    "docker_network", "docker_extra_args", "docker_shm_size",
+    "docker_persist_across_processes", "docker_orphan_reaper",
+    "docker_strict_mounts", "container_cpu", "container_memory",
+    "container_disk", "container_persistent",
+})
+
+
+def _apply_task_config_overrides(
+    config: Dict[str, Any], overrides: Dict[str, Any]
+) -> Dict[str, Any]:
+    """Merge the generic per-task terminal settings into one call's config.
+
+    The mapping is intentionally allowlisted.  RL environments and project
+    sandboxes can select an existing backend without mutating process-global
+    environment variables, while unrelated task metadata cannot leak into the
+    backend constructor.
+    """
+
+    if not overrides:
+        return config
+    merged = dict(config)
+    for key in _TASK_CONFIG_OVERRIDE_KEYS:
+        if key in overrides:
+            merged[key] = overrides[key]
+    return merged
+
+
+def _map_task_workdir(workdir: Optional[str], overrides: Dict[str, Any]) -> Optional[str]:
+    """Translate a validated host workdir into its task sandbox mount path."""
+
+    if not workdir:
+        return workdir
+    mappings = overrides.get("workdir_mappings")
+    if not isinstance(mappings, (list, tuple)):
+        return workdir
+    try:
+        candidate = Path(workdir).expanduser().resolve(strict=False)
+    except (OSError, RuntimeError, ValueError):
+        return workdir
+    for mapping in mappings:
+        if not isinstance(mapping, (list, tuple)) or len(mapping) != 2:
+            continue
+        host_root, container_root = mapping
+        try:
+            host = Path(str(host_root)).expanduser().resolve(strict=True)
+            relative = candidate.relative_to(host)
+        except (OSError, RuntimeError, ValueError):
+            continue
+        base = str(container_root).rstrip("/") or "/"
+        suffix = relative.as_posix()
+        return base if suffix == "." else f"{base}/{suffix}"
+    return workdir
 
 
 # Configuration from environment variables
@@ -1657,6 +1738,7 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
             extra_args=docker_extra_args,
             persist_across_processes=cc.get("docker_persist_across_processes", True),
             shm_size=cc.get("docker_shm_size", "1g"),
+            strict_mounts=cc.get("docker_strict_mounts", False),
         )
     
     elif env_type == "singularity":
@@ -1870,7 +1952,10 @@ def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
     lookup = _resolve_container_task_id(task_id)
     with _env_lock:
-        return _active_environments.get(lookup) or _active_environments.get(task_id)
+        env = _active_environments.get(lookup)
+        if env is None and lookup == "default":
+            env = _active_environments.get(task_id)
+        return env
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -1940,22 +2025,40 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
     via this function), so persist-mode idle envs are similarly no-op'd —
     only the orphan reaper at next startup reclaims them.
     """
+    overrides = resolve_task_overrides(task_id)
+    sandbox_key = overrides.get("sandbox_key")
+    if not force_remove and isinstance(sandbox_key, str) and sandbox_key.strip():
+        # A stable sandbox key can be shared by a parent and several concurrent
+        # delegate task ids. Per-turn and child.close() cleanup receives only
+        # one raw id; tearing down the effective environment here would break
+        # every sibling still using it. Keep the shared environment until the
+        # idle reaper/atexit cleanup, or an explicit force-remove request.
+        return
+
     # Remove from tracking dicts while holding the lock, but defer the
     # actual (potentially slow) env.cleanup() call to outside the lock
     # so other tool calls aren't blocked.
+    effective_task_id = _resolve_container_task_id(task_id)
     env = None
+    environment_key = effective_task_id
     with _env_lock:
-        env = _active_environments.pop(task_id, None)
-        _last_activity.pop(task_id, None)
+        env = _active_environments.pop(effective_task_id, None)
+        if env is None and effective_task_id == "default":
+            # CWD-only sessions and cleanup_all_environments() calls can name
+            # an environment by its direct cache key while still resolving to
+            # the shared default key.
+            environment_key = task_id
+            env = _active_environments.pop(task_id, None)
+        _last_activity.pop(environment_key, None)
 
     # Clean up per-task creation lock
     with _creation_locks_lock:
-        _creation_locks.pop(task_id, None)
+        _creation_locks.pop(environment_key, None)
 
     # Invalidate stale file_ops cache entry
     try:
         from tools.file_tools import clear_file_ops_cache
-        clear_file_ops_cache(task_id)
+        clear_file_ops_cache(environment_key)
     except ImportError:
         pass
 
@@ -1977,7 +2080,7 @@ def cleanup_vm(task_id: str, *, force_remove: bool = False):
         elif hasattr(env, 'terminate'):
             env.terminate()
 
-        logger.info("Manually cleaned up environment for task: %s", task_id)
+        logger.info("Manually cleaned up environment for task: %s", environment_key)
 
     except Exception as e:
         error_str = str(e)
@@ -2289,8 +2392,24 @@ def terminal_tool(
                 "status": "error",
             }, ensure_ascii=False)
 
+        # Gateway surfaces may supply only a conversation/session identifier.
+        # Treat it as the raw task key before resolving overrides so PMO's
+        # fail-closed project sandbox cannot be registered under ``session_id``
+        # and then silently missed by the terminal runtime.
+        task_id = task_id or session_id
+
         # Get configuration
         config = _get_env_config()
+        base_config_cwd = config["cwd"]
+
+        # Resolve per-task settings before backend selection.  Historically
+        # ``env_type`` was considered an isolation key by
+        # _resolve_container_task_id() but was never applied here, so a caller
+        # requesting Docker could still execute on the process-global local
+        # backend.  Keep the override scoped to this call and environment key.
+        overrides = resolve_task_overrides(task_id)
+        config = _apply_task_config_overrides(config, overrides)
+        workdir = _map_task_workdir(workdir, overrides)
         env_type = config["env_type"]
 
         # Use task_id for environment isolation. By default all subagent
@@ -2305,8 +2424,6 @@ def terminal_tool(
         # CWD-only override (which collapses ``effective_task_id`` to
         # ``"default"``) is still found under its originating session id while
         # isolation-keyed RL/benchmark overrides keep resolving as before.
-        overrides = resolve_task_overrides(task_id)
-        
         # Select image based on env type, with per-task override support
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -2338,7 +2455,7 @@ def terminal_tool(
                     "(won't exist in sandbox). Using %r instead.",
                     cwd, env_type, config["cwd"],
                 )
-            cwd = config["cwd"]
+            cwd = base_config_cwd
         default_timeout = config["timeout"]
 
         # Validate an explicit timeout before it flows into deadline math.
@@ -2389,7 +2506,13 @@ def terminal_tool(
             # task_id; honor it instead of spawning a duplicate.
             _existing_key = (
                 effective_task_id if effective_task_id in _active_environments
-                else (task_id if task_id and task_id in _active_environments else None)
+                else (
+                    task_id
+                    if effective_task_id == "default"
+                    and task_id
+                    and task_id in _active_environments
+                    else None
+                )
             )
             if _existing_key is not None:
                 _last_activity[_existing_key] = time.time()
@@ -2410,7 +2533,13 @@ def terminal_tool(
                 with _env_lock:
                     _existing_key = (
                         effective_task_id if effective_task_id in _active_environments
-                        else (task_id if task_id and task_id in _active_environments else None)
+                        else (
+                            task_id
+                            if effective_task_id == "default"
+                            and task_id
+                            and task_id in _active_environments
+                            else None
+                        )
                     )
                     if _existing_key is not None:
                         _last_activity[_existing_key] = time.time()
@@ -2451,6 +2580,7 @@ def terminal_tool(
                                 "docker_network": config.get("docker_network", True),
                                 "docker_persist_across_processes": config.get("docker_persist_across_processes", True),
                                 "docker_orphan_reaper": config.get("docker_orphan_reaper", True),
+                                "docker_strict_mounts": config.get("docker_strict_mounts", False),
                             }
 
                         local_config = None
@@ -2493,6 +2623,20 @@ def terminal_tool(
         from tools.approval import get_current_session_key
 
         session_key = get_current_session_key(default="") or (task_id or "")
+
+        # A gateway conversation can already have a durable host cwd recorded
+        # before a task-local backend switches it into a container. Translate
+        # that record through the same validated mount map used for explicit
+        # workdirs. An unmapped host cwd cannot exist in the sandbox, so reset
+        # it to the task's in-container default rather than issuing ``cd`` to a
+        # Windows/POSIX host path and breaking the first isolated command.
+        recorded_cwd = get_session_cwd(session_key)
+        if recorded_cwd and env_type in _CONTAINER_BACKENDS:
+            mapped_cwd = _map_task_workdir(recorded_cwd, overrides)
+            if mapped_cwd != recorded_cwd:
+                record_session_cwd(session_key, mapped_cwd)
+            elif _is_unusable_container_cwd(recorded_cwd):
+                record_session_cwd(session_key, cwd)
 
         # Hard-block: gateway lifecycle commands (systemctl/launchctl/hermes
         # restart|stop targeting hermes-gateway) must never run inside the

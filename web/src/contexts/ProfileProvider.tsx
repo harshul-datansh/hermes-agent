@@ -5,7 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { useLocation, useSearchParams } from "react-router";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
 import { api, setManagementProfile } from "@/lib/api";
 import { ProfileContext } from "@/contexts/profile-context";
 
@@ -34,8 +34,10 @@ import { ProfileContext } from "@/contexts/profile-context";
  * you click "Set as active".
  */
 export function ProfileProvider({ children }: { children: ReactNode }) {
-  const [searchParams, setSearchParams] = useSearchParams();
-  const { pathname } = useLocation();
+  const [searchParams] = useSearchParams();
+  const location = useLocation();
+  const { pathname } = location;
+  const navigate = useNavigate();
   const [profiles, setProfiles] = useState<string[]>([]);
   const [currentProfile, setCurrentProfile] = useState("default");
 
@@ -66,12 +68,14 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     const inUrl = searchParams.get("profile") ?? "";
     if ((profile || "") === inUrl) return;
-    setSearchParams(
-      (prev) => {
-        const next = new URLSearchParams(prev);
-        if (profile) next.set("profile", profile);
-        else next.delete("profile");
-        return next;
+    const next = new URLSearchParams(searchParams);
+    if (profile) next.set("profile", profile);
+    else next.delete("profile");
+    navigate(
+      {
+        pathname: location.pathname,
+        search: next.size ? `?${next.toString()}` : "",
+        hash: location.hash,
       },
       { replace: true },
     );
@@ -113,17 +117,19 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     (name: string) => {
       setManagementProfile(name);
       setProfileState(name);
-      setSearchParams(
-        (prev) => {
-          const next = new URLSearchParams(prev);
-          if (name) next.set("profile", name);
-          else next.delete("profile");
-          return next;
+      const next = new URLSearchParams(location.search);
+      if (name) next.set("profile", name);
+      else next.delete("profile");
+      navigate(
+        {
+          pathname: location.pathname,
+          search: next.size ? `?${next.toString()}` : "",
+          hash: location.hash,
         },
         { replace: true },
       );
     },
-    [setSearchParams],
+    [location.hash, location.pathname, location.search, navigate],
   );
 
   const value = useMemo(

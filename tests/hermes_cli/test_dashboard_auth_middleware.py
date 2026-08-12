@@ -77,6 +77,18 @@ def test_gated_status_is_public(gated_app):
     assert "gateway_state" in body
 
 
+def test_public_status_becomes_authenticated_when_project_scoped(gated_app):
+    """A project selector must not ride through the public health bypass.
+
+    Plain ``/api/status`` is intentionally public, but adding ``project_id``
+    asks for project/profile state and therefore requires a verified human
+    session before the project authorization middleware runs.
+    """
+    response = gated_app.get("/api/status?project_id=project-acme")
+    assert response.status_code == 401
+    assert response.json()["error"] == "unauthenticated"
+
+
 @pytest.mark.parametrize("path", [
     "/api/health",
     "/api/config/defaults",

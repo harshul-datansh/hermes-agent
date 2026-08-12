@@ -1732,9 +1732,21 @@ def get_provider_auth_state(provider_id: str) -> Optional[Dict[str, Any]]:
 
 
 def get_active_provider() -> Optional[str]:
-    """Return the currently active provider ID from auth store."""
+    """Return the profile's active provider, then the global fallback.
+
+    A named profile with no local provider selection inherits the global
+    selection just as its provider state and credential pool do. A local
+    ``active_provider`` remains authoritative and shadows the global value.
+    """
     auth_store = _load_auth_store()
-    return auth_store.get("active_provider")
+    active = auth_store.get("active_provider")
+    if isinstance(active, str) and active.strip():
+        return active.strip()
+    global_store = _load_global_auth_store()
+    global_active = global_store.get("active_provider")
+    if isinstance(global_active, str) and global_active.strip():
+        return global_active.strip()
+    return None
 
 
 def is_provider_explicitly_configured(provider_id: str) -> bool:
@@ -1754,8 +1766,7 @@ def is_provider_explicitly_configured(provider_id: str) -> bool:
 
     # 1. Check auth.json active_provider
     try:
-        auth_store = _load_auth_store()
-        active = (auth_store.get("active_provider") or "").strip().lower()
+        active = (get_active_provider() or "").strip().lower()
         if active and active == normalized:
             return True
     except Exception:
@@ -2069,8 +2080,7 @@ def resolve_provider(
     # actual OAuth fallback (tier 6) still happens later if nothing else matches.
     _oauth_active: Optional[str] = None
     try:
-        _store = _load_auth_store()
-        _maybe = _store.get("active_provider")
+        _maybe = get_active_provider()
         if _maybe and _maybe in PROVIDER_REGISTRY and get_auth_status(_maybe).get("logged_in"):
             _oauth_active = _maybe
     except Exception as e:
@@ -3950,6 +3960,7 @@ def resolve_codex_runtime_credentials(
     except AuthError as exc:
         read_error = exc
         if getattr(exc, "relogin_required", False) and getattr(exc, "code", None) in {
+            "codex_auth_missing",
             "codex_auth_missing_access_token",
             "codex_auth_missing_refresh_token",
             "codex_auth_invalid_shape",

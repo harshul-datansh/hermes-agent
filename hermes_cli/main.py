@@ -1032,6 +1032,17 @@ def _has_any_provider_configured() -> bool:
         except Exception:
             pass
 
+    # A profile may intentionally inherit the root OpenAI Codex login. Its
+    # local auth.json is then absent, so the generic active_provider check
+    # above cannot see it even though get_auth_status() can read the global
+    # fallback. Check the Hermes-owned OAuth status before treating the
+    # profile as a first-run installation.
+    try:
+        if get_auth_status("openai-codex").get("logged_in"):
+            return True
+    except Exception:
+        pass
+
     # Check config.yaml — if model is a dict with an explicit provider set,
     # the user has gone through setup (fresh installs have model as a plain
     # string).  Also covers custom endpoints that store api_key/base_url in

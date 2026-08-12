@@ -136,6 +136,23 @@ def test_provider_auth_state_returns_none_when_neither_has_it(profile_env):
     assert get_provider_auth_state("nous") is None
 
 
+def test_active_provider_falls_back_to_global_and_local_profile_wins(profile_env):
+    from hermes_cli.auth import get_active_provider
+
+    _write(profile_env["global"] / "auth.json", {
+        **_make_auth_store(providers={"openai-codex": {"tokens": {}}}),
+        "active_provider": "openai-codex",
+    })
+    _write(profile_env["profile"] / "auth.json", _make_auth_store(providers={}))
+    assert get_active_provider() == "openai-codex"
+
+    _write(profile_env["profile"] / "auth.json", {
+        **_make_auth_store(providers={"nous": {"access_token": "project"}}),
+        "active_provider": "nous",
+    })
+    assert get_active_provider() == "nous"
+
+
 # ---------------------------------------------------------------------------
 # _load_provider_state — internal global fallback (issue #18594 follow-up)
 #

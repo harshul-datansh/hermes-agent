@@ -1134,7 +1134,7 @@ def test_migrate_add_optional_columns_tolerates_concurrent_migration(kanban_home
 # ---------------------------------------------------------------------------
 
 
-def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeypatch):
+def test_resolve_hermes_argv_uses_module_form_without_explicit_override(monkeypatch):
     """When the shim is not on PATH, fall back to `python -m hermes_cli.main`.
 
     Pins the correct module name (NOT `hermes` — there is no top-level
@@ -1142,12 +1142,10 @@ def test_resolve_hermes_argv_falls_back_to_module_form_when_no_path_shim(monkeyp
     `python -m hermes` which fails with `No module named hermes` on every
     invocation.
     """
-    import shutil
     import sys
     import hermes_cli.kanban_db as kb
 
     monkeypatch.delenv("HERMES_BIN", raising=False)
-    monkeypatch.setattr(shutil, "which", lambda name: None)
     argv = kb._resolve_hermes_argv()
     assert argv == [sys.executable, "-m", "hermes_cli.main"]
 

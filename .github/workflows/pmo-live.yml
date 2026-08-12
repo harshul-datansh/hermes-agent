@@ -1,0 +1,83 @@
+name: PM-OS metered live acceptance
+
+on:
+  schedule:
+    - cron: "23 2 * * *"
+  workflow_dispatch:
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  live-acceptance:
+    if: >-
+      github.event_name != 'pull_request' ||
+      github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: pmo-live
+    env:
+      HERMES_LIVE_TESTS: "1"
+      OPENROUTER_API_KEY: ${{ secrets.PMO_LIVE_OPENROUTER_API_KEY }}
+      PMO_LIVE_MODEL: ${{ vars.PMO_LIVE_MODEL }}
+      PMO_LIVE_MAX_USD: "0.25"
+      PMO_LIVE_RESULT_PATH: pmo-live-cost.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.9.28"
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync exact locked test dependencies
+        run: uv sync --locked --python 3.11 --extra dev
+
+      - name: Require protected live credentials
+        run: |
+          test -n "$OPENROUTER_API_KEY"
+          test -n "$PMO_LIVE_MODEL"
+
+      - name: Restore bounded cost trend
+        uses: actions/cache/restore@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: pmo-live-cost-history.json
+          key: pmo-live-cost-history-${{ github.run_id }}
+          restore-keys: pmo-live-cost-history-
+
+      - name: Run one bounded real-model PM scenario
+        run: >-
+          uv run --no-sync python -m pytest
+          tests/run_agent/test_pmo_live_acceptance.py
+          -q
+
+      - name: Update cost trend
+        if: always() && hashFiles('pmo-live-cost.json') != ''
+        run: >-
+          uv run --no-sync python scripts/pmo_live_trend.py
+          --current pmo-live-cost.json
+          --history pmo-live-cost-history.json
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload live evidence
+        if: always() && hashFiles('pmo-live-cost.json') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pmo-live-cost-${{ github.run_id }}
+          path: |
+            pmo-live-cost.json
+            pmo-live-cost-history.json
+          retention-days: 30
+
+      - name: Save bounded cost trend
+        if: always() && hashFiles('pmo-live-cost-history.json') != ''
+        uses: actions/cache/save@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5.0.5
+        with:
+          path: pmo-live-cost-history.json
+          key: pmo-live-cost-history-${{ github.run_id }}

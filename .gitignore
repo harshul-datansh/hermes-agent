@@ -149,6 +149,11 @@ docs/superpowers/*
 # the route name, so each route gets its own tree and two can run at once.
 .hermes-sandbox-e2e*/
 
+# Local PMO demo/runtime state (credentials, databases, logs, and generated sandboxes)
+.pmo-local-demo/
+%SystemDrive%/
+ui-tui/.pmo-local-demo/
+
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change
 # — ignore so `git status` stays clean and update's autostash skips them.

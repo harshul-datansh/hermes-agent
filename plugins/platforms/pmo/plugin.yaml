@@ -1,0 +1,19 @@
+name: pmo-platform
+label: Datansh PM-OS
+kind: platform
+version: 0.1.0
+description: >
+  In-process gateway bridge for Datansh PM-OS project conversations. Durable
+  messages remain native Kanban task comments; the adapter only routes
+  authenticated founder and client events through Hermes' normal gateway
+  sessions, turn leasing, profile isolation, memory, skills, and delivery.
+author: Datansh
+hooks:
+  - pre_tool_call
+  - on_session_end
+requires_env: []
+optional_env:
+  - name: PMO_GATEWAY_ENABLED
+    description: "Enable the PM-OS in-process gateway adapter (true/false)."
+    prompt: "Enable Datansh PM-OS gateway?"
+    password: false

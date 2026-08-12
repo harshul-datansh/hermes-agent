@@ -67,3 +67,134 @@ def test_env_type_override_keeps_own_id():
         )
     finally:
         terminal_tool.clear_task_env_overrides("bench-env")
+
+
+def test_explicit_sandbox_key_groups_only_that_project():
+    terminal_tool.register_task_env_overrides(
+        "pm-session", {"env_type": "docker", "sandbox_key": "pmo-project-a"}
+    )
+    try:
+        assert terminal_tool._resolve_container_task_id("pm-session") == "pmo-project-a"
+    finally:
+        terminal_tool.clear_task_env_overrides("pm-session")
+
+
+def test_sandbox_registration_does_not_mutate_stale_raw_environment(monkeypatch):
+    class RawEnvironment:
+        cwd = "/host/project"
+
+    raw = RawEnvironment()
+    monkeypatch.setattr(
+        terminal_tool, "_active_environments", {"pm-session": raw}
+    )
+
+    terminal_tool.register_task_env_overrides(
+        "pm-session",
+        {
+            "env_type": "docker",
+            "sandbox_key": "pmo-project-a",
+            "cwd": "/workspace",
+        },
+    )
+
+    assert raw.cwd == "/host/project"
+    assert terminal_tool.get_active_env("pm-session") is None
+
+
+def test_repeated_sandbox_registration_preserves_live_cwd(monkeypatch):
+    class SandboxEnvironment:
+        cwd = "/workspace/src"
+
+    sandbox = SandboxEnvironment()
+    overrides = {
+        "env_type": "docker",
+        "sandbox_key": "pmo-project-a",
+        "cwd": "/workspace",
+    }
+    monkeypatch.setattr(
+        terminal_tool, "_active_environments", {"pmo-project-a": sandbox}
+    )
+    monkeypatch.setattr(
+        terminal_tool, "_session_cwd", {"pm-session": "/workspace/src"}
+    )
+
+    terminal_tool.register_task_env_overrides("pm-session", overrides)
+    sandbox.cwd = "/workspace/src"
+    terminal_tool.record_session_cwd("pm-session", "/workspace/src")
+    terminal_tool.register_task_env_overrides("pm-session", dict(overrides))
+
+    assert sandbox.cwd == "/workspace/src"
+    assert terminal_tool.get_session_cwd("pm-session") == "/workspace/src"
+
+
+def test_shared_sandbox_cleanup_requires_force_remove(monkeypatch):
+    cleaned = []
+
+    class SandboxEnvironment:
+        def cleanup(self, *, force_remove=False):
+            cleaned.append(force_remove)
+
+    sandbox = SandboxEnvironment()
+    monkeypatch.setattr(
+        terminal_tool, "_active_environments", {"pmo-project-a": sandbox}
+    )
+    monkeypatch.setattr(
+        terminal_tool, "_last_activity", {"pmo-project-a": 123.0}
+    )
+    monkeypatch.setattr(terminal_tool, "_creation_locks", {})
+    terminal_tool.register_task_env_overrides(
+        "pm-session",
+        {"env_type": "docker", "sandbox_key": "pmo-project-a"},
+    )
+
+    terminal_tool.cleanup_vm("pm-session")
+
+    assert cleaned == []
+    assert terminal_tool._active_environments["pmo-project-a"] is sandbox
+
+    terminal_tool.cleanup_vm("pm-session", force_remove=True)
+
+    assert cleaned == [True]
+    assert "pmo-project-a" not in terminal_tool._active_environments
+    assert "pmo-project-a" not in terminal_tool._last_activity
+
+
+def test_task_backend_override_is_applied_without_mutating_global_config():
+    base = {
+        "env_type": "local",
+        "cwd": "/host",
+        "docker_volumes": ["/global:/workspace"],
+    }
+    overrides = {
+        "env_type": "docker",
+        "cwd": "/workspace",
+        "docker_volumes": ["/project:/workspace"],
+        "docker_strict_mounts": True,
+        "untrusted_metadata": "ignored",
+    }
+
+    merged = terminal_tool._apply_task_config_overrides(base, overrides)
+
+    assert merged["env_type"] == "docker"
+    assert merged["cwd"] == "/workspace"
+    assert merged["docker_volumes"] == ["/project:/workspace"]
+    assert merged["docker_strict_mounts"] is True
+    assert "untrusted_metadata" not in merged
+    assert base == {
+        "env_type": "local",
+        "cwd": "/host",
+        "docker_volumes": ["/global:/workspace"],
+    }
+
+
+def test_task_workdir_maps_host_subdirectory_into_project_mount(tmp_path):
+    project = tmp_path / "project"
+    nested = project / "src" / "api"
+    nested.mkdir(parents=True)
+    overrides = {"workdir_mappings": [(str(project), "/workspace")]}
+
+    assert terminal_tool._map_task_workdir(str(project), overrides) == "/workspace"
+    assert terminal_tool._map_task_workdir(str(nested), overrides) == "/workspace/src/api"
+    assert terminal_tool._map_task_workdir(str(tmp_path / "other"), overrides) == str(
+        tmp_path / "other"
+    )

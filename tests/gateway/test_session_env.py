@@ -76,6 +76,29 @@ def test_set_session_env_sets_contextvars(monkeypatch):
     runner._clear_session_env(tokens)
 
 
+def test_local_adapter_runtime_cwd_is_task_local_and_wire_invisible(tmp_path):
+    from agent.runtime_cwd import resolve_agent_cwd
+    from tools.terminal_tool import clear_session_cwd, get_session_cwd
+
+    runner = object.__new__(GatewayRunner)
+    source = SessionSource(
+        platform=Platform.LOCAL,
+        chat_id="project-a",
+        runtime_cwd=str(tmp_path),
+    )
+    context = SessionContext(source=source, connected_platforms=[], home_channels={})
+
+    tokens = runner._set_session_env(context)
+    try:
+        assert resolve_agent_cwd() == tmp_path
+        assert get_session_cwd(context.session_key) == str(tmp_path)
+        assert "runtime_cwd" not in source.to_dict()
+        assert SessionSource.from_dict(source.to_dict()).runtime_cwd is None
+    finally:
+        runner._clear_session_env(tokens)
+        clear_session_cwd(context.session_key)
+
+
 def test_clear_session_env_restores_previous_state(monkeypatch):
     """_clear_session_env should restore contextvars to their pre-handler values."""
     runner = object.__new__(GatewayRunner)
@@ -192,8 +215,7 @@ def test_session_key_no_race_condition_with_contextvars(monkeypatch):
     )
 
 
-@pytest.mark.asyncio
-async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
+def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
     """Gateway executor work should inherit session contextvars for tool routing."""
     runner = object.__new__(GatewayRunner)
     monkeypatch.delenv("HERMES_SESSION_PLATFORM", raising=False)
@@ -216,19 +238,22 @@ async def test_run_in_executor_with_context_preserves_session_env(monkeypatch):
         session_key="agent:main:telegram:dm:2144471399",
     )
 
-    tokens = runner._set_session_env(context)
-    try:
-        result = await runner._run_in_executor_with_context(
-            lambda: {
-                "platform": get_session_env("HERMES_SESSION_PLATFORM"),
-                "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
-                "user_id": get_session_env("HERMES_SESSION_USER_ID"),
-                "session_key": get_session_env("HERMES_SESSION_KEY"),
-            }
-        )
-    finally:
-        runner._clear_session_env(tokens)
-        runner._shutdown_executor()
+    async def run():
+        tokens = runner._set_session_env(context)
+        try:
+            return await runner._run_in_executor_with_context(
+                lambda: {
+                    "platform": get_session_env("HERMES_SESSION_PLATFORM"),
+                    "chat_id": get_session_env("HERMES_SESSION_CHAT_ID"),
+                    "user_id": get_session_env("HERMES_SESSION_USER_ID"),
+                    "session_key": get_session_env("HERMES_SESSION_KEY"),
+                }
+            )
+        finally:
+            runner._clear_session_env(tokens)
+            runner._shutdown_executor()
+
+    result = asyncio.run(run())
 
     assert result == {
         "platform": "telegram",

@@ -54,6 +54,25 @@ class TestFileToolsContainerConfig:
         cc = self._run(_make_env_config(docker_mount_cwd_to_workspace=True), "t1").get("container_config", {})
         assert cc.get("docker_mount_cwd_to_workspace") is True
 
+    def test_docker_security_and_lifecycle_settings_are_passed(self):
+        """File tools must create the same bounded Docker env as terminal."""
+        cc = self._run(
+            _make_env_config(
+                docker_env={"HERMES_HOME": "/opt/data"},
+                docker_extra_args=["--read-only"],
+                docker_persist_across_processes=False,
+                docker_shm_size="512m",
+                docker_strict_mounts=True,
+            ),
+            "project-task",
+        ).get("container_config", {})
+
+        assert cc["docker_env"] == {"HERMES_HOME": "/opt/data"}
+        assert cc["docker_extra_args"] == ["--read-only"]
+        assert cc["docker_persist_across_processes"] is False
+        assert cc["docker_shm_size"] == "512m"
+        assert cc["docker_strict_mounts"] is True
+
 
     def test_cwd_only_raw_task_override_reaches_file_environment(self):
         """CWD-only task overrides collapse to default but must keep their cwd."""

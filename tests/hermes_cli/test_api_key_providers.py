@@ -660,6 +660,21 @@ class TestHasAnyProviderConfigured:
             f"provider registry sweep ran before auth.json short-circuit: {calls}"
         )
 
+    def test_inherited_codex_auth_skips_first_run_guard(self, monkeypatch, tmp_path):
+        """A profile inherits a root Codex login without a local auth.json."""
+        self._setup_home(monkeypatch, tmp_path)
+        calls = []
+
+        def _status(provider_id):
+            calls.append(provider_id)
+            return {"logged_in": provider_id == "openai-codex"}
+
+        monkeypatch.setattr("hermes_cli.auth.get_auth_status", _status)
+        from hermes_cli.main import _has_any_provider_configured
+
+        assert _has_any_provider_configured() is True
+        assert calls == ["openai-codex"]
+
 
 # =============================================================================
 # Kimi Code auto-detection tests

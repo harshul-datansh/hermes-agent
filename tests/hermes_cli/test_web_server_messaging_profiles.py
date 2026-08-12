@@ -67,6 +67,34 @@ def _env_field(platform, key):
 
 
 class TestProfileScopedMessagingReads:
+    def test_multiplexed_profile_reports_shared_gateway_running(
+        self, client, isolated_profiles, monkeypatch
+    ):
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "_collect_profile_gateway_topology",
+            lambda: {
+                "profiles": ["default", "worker_alpha"],
+                "gateway_mode": "multiplex",
+                "gateways": [
+                    {
+                        "profile": "default",
+                        "ports": {},
+                        "served_profiles": ["default", "worker_alpha"],
+                    }
+                ],
+            },
+        )
+
+        resp = client.get(
+            "/api/messaging/platforms", params={"profile": "worker_alpha"}
+        )
+
+        assert resp.status_code == 200
+        assert all(item["gateway_running"] for item in resp.json()["platforms"])
+
     def test_scoped_read_does_not_show_root_credentials(
         self, client, isolated_profiles
     ):

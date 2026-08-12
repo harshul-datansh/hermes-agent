@@ -73,6 +73,11 @@ jobs:
     with:
       slice_count: 8
 
+  pmo-contract:
+    name: PM-OS compatibility contract
+    needs: detect
+    uses: ./.github/workflows/pmo-contract.yml
+
   lint:
     name: Python lints
     needs: detect
@@ -273,6 +278,7 @@ jobs:
     needs:
       - detect
       - tests
+      - pmo-contract
       - lint
       - js-tests
       - e2e-desktop

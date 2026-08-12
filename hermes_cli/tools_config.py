@@ -2490,6 +2490,16 @@ def _get_platform_tools(
         disabled_set = {str(ts) for ts in disabled_toolsets}
         enabled_toolsets -= disabled_set
 
+    # A profile may opt into a strict platform toolset allowlist. This is
+    # intentionally a final filter: normal platform recovery and newly
+    # discovered plugin toolsets happen above, but narrow operator profiles
+    # (such as the PM-OS project manager) must not inherit them later.
+    toolset_allowlist = agent_cfg.get("toolset_allowlist") or {}
+    if isinstance(toolset_allowlist, dict):
+        raw_allowed = toolset_allowlist.get(platform)
+        if isinstance(raw_allowed, list):
+            enabled_toolsets &= {str(toolset) for toolset in raw_allowed}
+
     # #38798: if this platform was explicitly configured but every toolset name
     # is invalid (e.g. a migration or hand-edit left `hermes` instead of
     # `hermes-cli`), resolve_toolset() returns [] for each and the platform ends

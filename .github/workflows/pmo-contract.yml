@@ -1,0 +1,97 @@
+name: PM-OS compatibility contract
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Verify copied Kanban provenance
+        run: python scripts/check_pmo_kanban_sync.py
+
+      - name: Verify additive Hermes capability boundary
+        run: python scripts/check_pmo_capability_contract.py
+
+  scripted-acceptance:
+    name: PM-OS deterministic L3 acceptance
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync exact locked test dependencies
+        run: uv sync --locked --python 3.11 --extra dev
+
+      - name: Run deterministic PM-OS harness and acceptance
+        run: >-
+          uv run --no-sync python -m pytest
+          tests/test_pmo_scripted_harness.py
+          tests/test_pmo_scripted_acceptance.py
+          tests/test_pmo_compatibility_parity.py
+          -q
+
+  lint-types:
+    name: PM-OS ruff + ty
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install pinned uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          version: "0.9.28"
+          enable-cache: true
+          cache-dependency-glob: |
+            pyproject.toml
+            uv.lock
+
+      - name: Install Python 3.11
+        run: uv python install 3.11
+
+      - name: Sync exact locked lint/type tooling
+        run: uv sync --locked --python 3.11 --extra dev
+
+      - name: Ruff PM-OS-owned Python
+        run: >-
+          uv run --no-sync ruff check
+          plugins/pmo
+          plugins/platforms/pmo
+          tests/test_pmo_compatibility_parity.py
+          tests/test_pmo_scripted_acceptance.py
+
+      - name: Type-check PM-OS compatibility boundary
+        # The repository-wide lint workflow already publishes advisory ty
+        # diagnostics. This blocking slice covers the additive gateway,
+        # budget/recovery/integration edges and the executable compatibility
+        # checker without inheriting unrelated copied-dashboard type debt.
+        run: >-
+          uv run --no-sync ty check
+          plugins/pmo/cost.py
+          plugins/pmo/doctor.py
+          plugins/pmo/git_flow.py
+          plugins/platforms/pmo/adapter.py
+          plugins/platforms/pmo/cli.py
+          scripts/check_pmo_capability_contract.py

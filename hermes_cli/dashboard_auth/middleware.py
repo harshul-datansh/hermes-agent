@@ -323,6 +323,8 @@ def _verify_bearer(request: Request, *, access_token: str):
 async def gated_auth_middleware(
     request: Request,
     call_next: Callable[[Request], Awaitable[Response]],
+    *,
+    force_auth: bool = False,
 ) -> Response:
     """Engaged only when ``app.state.auth_required is True``.
 
@@ -340,7 +342,13 @@ async def gated_auth_middleware(
         return await call_next(request)
 
     path = request.url.path
-    if _path_is_public(path):
+    # A route can be public in its machine-level form while becoming
+    # user/project scoped when the caller supplies a project identity.  The
+    # PM-OS host uses ``force_auth`` for that conditional case so
+    # ``/api/status`` remains a public liveness probe, but
+    # ``/api/status?project_id=...`` receives a verified session before
+    # project authorization runs.
+    if _path_is_public(path) and not force_auth:
         return await call_next(request)
 
     # RFC 8252 native-app bearer path (goal: no session cookies). The desktop

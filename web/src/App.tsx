@@ -69,8 +69,10 @@ import { useSidebarStatus } from "@/hooks/useSidebarStatus";
 import { AuthWidget } from "@/components/AuthWidget";
 import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { ProfileProvider } from "@/contexts/ProfileProvider";
+import { ProjectProvider } from "@/contexts/ProjectProvider";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { ProfileSwitcher } from "@/components/ProfileSwitcher";
+import { ProjectSwitcher } from "@/components/ProjectSwitcher";
 import { ProfileScopeBanner } from "@/components/ProfileScopeBanner";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
@@ -510,6 +512,7 @@ export default function App() {
 
   return (
     <ProfileProvider>
+    <ProjectProvider>
     <div
       data-layout-variant={layoutVariant}
       className="flex h-dvh max-h-dvh min-h-0 flex-col overflow-hidden bg-background-base text-text-primary antialiased"
@@ -638,6 +641,7 @@ export default function App() {
               </Button>
             </div>
 
+            <ProjectSwitcher collapsed={isDesktopCollapsed} />
             <ProfileSwitcher collapsed={isDesktopCollapsed} />
 
             <nav
@@ -818,6 +822,7 @@ export default function App() {
 
       <PluginSlot name="overlay" />
     </div>
+    </ProjectProvider>
     </ProfileProvider>
   );
 }
